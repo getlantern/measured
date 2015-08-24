@@ -27,7 +27,7 @@ func NewInfluxDBReporter(influxURL, username, password, dbName string, httpClien
 	if httpClient == nil {
 		httpClient = &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			},
 		}
 	}
