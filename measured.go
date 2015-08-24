@@ -1,5 +1,5 @@
 /*
-measured wraps a dialer to measure the delay, throughput and errors of the connection made.
+Package measured wraps a dialer to measure the delay, throughput and errors of the connection made.
 A list of reporters can be plugged in to distribute the results to different target.
 */
 package measured
@@ -12,6 +12,7 @@ import (
 	"github.com/getlantern/golog"
 )
 
+// Stats encapsulates the statistics to report
 type Stats struct {
 	Instance     string
 	Server       string
@@ -20,6 +21,7 @@ type Stats struct {
 	Errors       map[string]int
 }
 
+// Reporter encapsulates different ways to report statistics
 type Reporter interface {
 	Submit(Stats) error
 }
@@ -28,17 +30,21 @@ var reporters []Reporter
 
 var log = golog.LoggerFor("measured")
 
-type dialFunc func(net, addr string) (net.Conn, error)
+// DialFunc is the type of function measured can wrap
+type DialFunc func(net, addr string) (net.Conn, error)
 
+// Reset resets the measured package
 func Reset() {
 	reporters = []Reporter{}
 }
 
+// AddReporter add a new way to report statistics
 func AddReporter(r Reporter) {
 	reporters = append(reporters, r)
 }
 
-func Dialer(d dialFunc) dialFunc {
+// Dialer wraps a dial function to measure various metrics
+func Dialer(d DialFunc) DialFunc {
 	return func(net, addr string) (net.Conn, error) {
 		c, err := d(net, addr)
 		if err != nil {
@@ -56,9 +62,9 @@ func reportError(addr string, err error) {
 			Server: addr,
 			Errors: map[string]int{e: 1},
 		}); err != nil {
-			log.Errorf("Fail to report error %s of %s: %s", e, addr, err)
+			log.Errorf("Fail to report error of %s to influxdb: %s", addr, err)
 		} else {
-			log.Debugf("Submitted %s of %s to influxdb", e, addr)
+			log.Tracef("Submitted error of %s to influxdb: %s", addr, e)
 		}
 	}
 }

@@ -1,62 +1,82 @@
 package reporter
 
 import (
-	"log"
+	"bytes"
+	"crypto/tls"
+	"fmt"
 	"net/http"
-	"net/url"
+	"strings"
 	"time"
 
+	"github.com/getlantern/golog"
 	"github.com/getlantern/measured"
-	"github.com/influxdb/influxdb/client"
+)
+
+var (
+	log = golog.LoggerFor("measured.reporter")
 )
 
 type influxDBReporter struct {
-	c  *client.Client
-	db string
+	httpClient *http.Client
+	url        string
+	username   string
+	password   string
 }
 
-func NewInfluxDBReporter(dbUrl, user, password, db string, httpClient *http.Client) measured.Reporter {
-	u, err := url.Parse(dbUrl)
-	if err != nil {
-		log.Fatal(err)
+func NewInfluxDBReporter(influxURL, username, password, dbName string, httpClient *http.Client) measured.Reporter {
+	if httpClient == nil {
+		httpClient = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+			},
+		}
 	}
-	conf := client.Config{
-		URL:      *u,
-		Username: user,
-		Password: password,
-	}
-	c, err := client.NewClient(conf)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if httpClient != nil {
-		c.HttpClient = httpClient
-	}
-	return &influxDBReporter{c, db}
+	u := fmt.Sprintf("%s/write?db=%s", strings.TrimRight(influxURL, "/"), dbName)
+	return &influxDBReporter{httpClient, u, username, password}
 }
 
 func (ir *influxDBReporter) Submit(s measured.Stats) error {
-	var pts []client.Point
+	var buf bytes.Buffer
 	for k, v := range s.Errors {
-		pts = append(pts, client.Point{
-			Measurement: "errors",
-			Tags: map[string]string{
-				"instance": s.Instance,
-				"server":   s.Server,
-				"error":    k,
-			},
-			Fields: map[string]interface{}{
-				"value": v,
-			},
-			Time:      time.Now(),
-			Precision: "s",
-		})
+		buf.WriteString("errors,")
+		buf.WriteString(fmt.Sprintf("instance=%s,server=%s,error=%s ", s.Instance, s.Server, escapeStringField(k)))
+		buf.WriteString(fmt.Sprintf("value=%di %d\n", v, time.Now().UnixNano()))
 	}
-	bps := client.BatchPoints{
-		Points:          pts,
-		Database:        ir.db,
-		RetentionPolicy: "default",
+	req, err := http.NewRequest("POST", ir.url, &buf)
+	if err != nil {
+		log.Errorf("Error make POST request to %s: %s", ir.url, err)
+		return err
 	}
-	_, err := ir.c.Write(bps)
+	req.SetBasicAuth(ir.username, ir.password)
+	rsp, err := ir.httpClient.Do(req)
+	if err != nil {
+		log.Errorf("Error send POST request to %s: %s", ir.url, err)
+		return err
+	}
+	if rsp.StatusCode != 204 {
+		err = fmt.Errorf("Error response from %s: %s", ir.url, rsp.Status)
+		log.Error(err)
+		return err
+	}
 	return err
+}
+
+func escapeStringField(in string) string {
+	var out []byte
+	i := 0
+	for {
+		if i >= len(in) {
+			break
+		}
+		if in[i] == ',' || in[i] == '=' || in[i] == ' ' {
+			out = append(out, '\\')
+			out = append(out, in[i])
+			i += 1
+			continue
+		}
+		out = append(out, in[i])
+		i += 1
+
+	}
+	return string(out)
 }
