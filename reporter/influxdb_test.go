@@ -26,13 +26,17 @@ func TestWriteLineProtocol(t *testing.T) {
 		Tags: map[string]string{
 			"server": "fl-nl-xxx",
 			"error":  "test error",
+			"empty":  "",
 		},
-		Fields: map[string]interface{}{"value": 3}})
+		Fields: map[string]interface{}{"value": 3, "empty": ""}})
 	assert.NoError(t, e, "", "")
 	req := <-chReq
 	assert.Equal(t, req[0], "test-user", "")
 	assert.Equal(t, req[1], "test-password", "")
-	assert.Contains(t, req[2], "errors,server=fl-nl-xxx,error=test\\ error value=3i", "should send correct InfluxDB line protocol data")
+	assert.Contains(t, req[2], "errors,", "should send correct InfluxDB line protocol measurement")
+	assert.Contains(t, req[2], "error=test\\ error", "should send correct InfluxDB line protocol tag")
+	assert.Contains(t, req[2], "server=fl-nl-xxx", "should send correct InfluxDB line protocol tag")
+	assert.Contains(t, req[2], " value=3i", "should send correct InfluxDB line protocol field")
 
 }
 
