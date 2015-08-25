@@ -7,14 +7,13 @@ package measured
 import (
 	"net"
 	"strings"
-	//	"time"
 
 	"github.com/getlantern/golog"
 )
 
 // Stats encapsulates the statistics to report
 type Stats struct {
-	Instance     string
+	Country      string
 	Server       string
 	BytesRead    uint64
 	BytesWritten uint64
@@ -23,12 +22,15 @@ type Stats struct {
 
 // Reporter encapsulates different ways to report statistics
 type Reporter interface {
-	Submit(Stats) error
+	Submit(*Stats) error
 }
 
-var reporters []Reporter
-
-var log = golog.LoggerFor("measured")
+var (
+	reporters []Reporter
+	log       = golog.LoggerFor("measured")
+	chStats   = make(chan *Stats)
+	chStop    = make(chan interface{})
+)
 
 // DialFunc is the type of function measured can wrap
 type DialFunc func(net, addr string) (net.Conn, error)
@@ -43,70 +45,89 @@ func AddReporter(r Reporter) {
 	reporters = append(reporters, r)
 }
 
+// Start runs the reporting process
+func Start() {
+	go run()
+}
+
+// Stop runs the reporting process
+func Stop() {
+	log.Debug("Stopping measured loop...")
+	select {
+	case chStop <- nil:
+	default:
+	}
+}
+
 // Dialer wraps a dial function to measure various metrics
-func Dialer(d DialFunc) DialFunc {
+func Dialer(d DialFunc, via string) DialFunc {
 	return func(net, addr string) (net.Conn, error) {
 		c, err := d(net, addr)
 		if err != nil {
-			reportError(addr, err)
+			reportError(via, err)
 		}
-		return measuredConn{c, addr, new(counter)}, err
+		return measuredConn{c, via}, err
+	}
+}
+
+func run() {
+	log.Debug("Measured loop started")
+	for {
+		select {
+		case s := <-chStats:
+			for _, r := range reporters {
+				if err := r.Submit(s); err != nil {
+					log.Errorf("report error to influxdb failed: %s", err)
+				} else {
+					log.Tracef("submitted error to influxdb: %s", s)
+				}
+			}
+		case <-chStop:
+			return
+		}
 	}
 }
 
 func reportError(addr string, err error) {
 	splitted := strings.Split(err.Error(), ":")
 	e := strings.Trim(splitted[len(splitted)-1], " ")
-	for _, r := range reporters {
-		if err = r.Submit(Stats{
-			Server: addr,
-			Errors: map[string]int{e: 1},
-		}); err != nil {
-			log.Errorf("Fail to report error of %s to influxdb: %s", addr, err)
-		} else {
-			log.Tracef("Submitted error of %s to influxdb: %s", addr, e)
-		}
+	select {
+	case chStats <- &Stats{
+		Server: addr,
+		Errors: map[string]int{e: 1},
+	}:
+	default:
 	}
 }
 
 type measuredConn struct {
 	net.Conn
 	addr string
-	c    *counter
 }
 
 // Read() implements the function from net.Conn
 func (mc measuredConn) Read(b []byte) (n int, err error) {
-	//start := time.Now()
 	n, err = mc.Conn.Read(b)
 	if err != nil {
 		reportError(mc.addr, err)
 	}
-	//mc.c.OnRead(n, err, time.Now()-start)
 	return
 }
 
 // Write() implements the function from net.Conn
 func (mc measuredConn) Write(b []byte) (n int, err error) {
-	//start := time.Now()
 	n, err = mc.Conn.Write(b)
 	if err != nil {
 		reportError(mc.addr, err)
 	}
-	//mc.c.OnWrite(n, err, time.Now()-start)
 	return
 }
 
 // Close() implements the function from net.Conn
 func (mc measuredConn) Close() (err error) {
-	//start := time.Now()
 	err = mc.Conn.Close()
 	if err != nil {
 		reportError(mc.addr, err)
 	}
-	//mc.c.OnClose(err, time.Now()-start)
 	return
-}
-
-type counter struct {
 }

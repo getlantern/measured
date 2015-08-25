@@ -21,23 +21,21 @@ func TestWriteLineProtocol(t *testing.T) {
 	}))
 	defer ts.Close()
 	ir := NewInfluxDBReporter(ts.URL, "test-user", "test-password", "testdb", nil)
-	e := ir.Submit(measured.Stats{
-		Instance: "ln001",
-		Server:   "fl-nl-xxx",
-		Errors:   map[string]int{"test error": 3}})
+	e := ir.Submit(&measured.Stats{
+		Server: "fl-nl-xxx",
+		Errors: map[string]int{"test error": 3}})
 	assert.NoError(t, e, "", "")
 	req := <-chReq
 	assert.Equal(t, req[0], "test-user", "")
 	assert.Equal(t, req[1], "test-password", "")
-	assert.Contains(t, req[2], "errors,instance=ln001,server=fl-nl-xxx,error=test\\ error value=3i", "should send correct InfluxDB line protocol data")
+	assert.Contains(t, req[2], "errors,server=fl-nl-xxx,error=test\\ error value=3i", "should send correct InfluxDB line protocol data")
 
 }
 
 func TestRealServer(t *testing.T) {
 	ir := NewInfluxDBReporter("https://influx.getiantem.org/", "test", "test", "lantern", nil)
-	e := ir.Submit(measured.Stats{
-		Instance: "ln001",
-		Server:   "fl-nl-xxx",
-		Errors:   map[string]int{"test error": 3}})
+	e := ir.Submit(&measured.Stats{
+		Server: "fl-nl-xxx",
+		Errors: map[string]int{"test error": 3}})
 	assert.NoError(t, e, "", "")
 }

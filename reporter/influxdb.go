@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"strings"
 	"time"
@@ -35,11 +36,11 @@ func NewInfluxDBReporter(influxURL, username, password, dbName string, httpClien
 	return &influxDBReporter{httpClient, u, username, password}
 }
 
-func (ir *influxDBReporter) Submit(s measured.Stats) error {
+func (ir *influxDBReporter) Submit(s *measured.Stats) error {
 	var buf bytes.Buffer
 	for k, v := range s.Errors {
 		buf.WriteString("errors,")
-		buf.WriteString(fmt.Sprintf("instance=%s,server=%s,error=%s ", s.Instance, s.Server, escapeStringField(k)))
+		buf.WriteString(fmt.Sprintf("server=%s,error=%s ", s.Server, escapeStringField(k)))
 		buf.WriteString(fmt.Sprintf("value=%di %d\n", v, time.Now().UnixNano()))
 	}
 	req, err := http.NewRequest("POST", ir.url, &buf)
@@ -56,6 +57,8 @@ func (ir *influxDBReporter) Submit(s measured.Stats) error {
 	if rsp.StatusCode != 204 {
 		err = fmt.Errorf("Error response from %s: %s", ir.url, rsp.Status)
 		log.Error(err)
+		b, _ := ioutil.ReadAll(rsp.Body)
+		log.Debug(string(b))
 		return err
 	}
 	return err
