@@ -49,7 +49,7 @@ func TestDefaultTags(t *testing.T) {
 	Start()
 	defer Stop()
 	runtime.Gosched()
-	reportError("test-server", fmt.Errorf("test-error"))
+	reportError("test-server", fmt.Errorf("test-error"), "dial-phase")
 	time.Sleep(50 * time.Millisecond)
 	if assert.Equal(t, 1, len(nr.s)) {
 		assert.Equal(t, "test-app", nr.s[0].Tags["app"], "should report default tags")

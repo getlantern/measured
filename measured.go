@@ -69,7 +69,7 @@ func Dialer(d DialFunc, via string) DialFunc {
 	return func(net, addr string) (net.Conn, error) {
 		c, err := d(net, addr)
 		if err != nil {
-			reportError(via, err)
+			reportError(via, err, "dial")
 		}
 		return measuredConn{c, via}, err
 	}
@@ -97,7 +97,7 @@ func run() {
 	}
 }
 
-func reportError(addr string, err error) {
+func reportError(addr string, err error, phase string) {
 	splitted := strings.Split(err.Error(), ":")
 	lastIndex := len(splitted) - 1
 	if lastIndex < 0 {
@@ -110,6 +110,7 @@ func reportError(addr string, err error) {
 		Tags: map[string]string{
 			"server": addr,
 			"error":  e,
+			"phase":  phase,
 		},
 		Fields: map[string]interface{}{"value": 1},
 	}:
@@ -126,7 +127,7 @@ type measuredConn struct {
 func (mc measuredConn) Read(b []byte) (n int, err error) {
 	n, err = mc.Conn.Read(b)
 	if err != nil {
-		reportError(mc.addr, err)
+		reportError(mc.addr, err, "read")
 	}
 	return
 }
@@ -135,7 +136,7 @@ func (mc measuredConn) Read(b []byte) (n int, err error) {
 func (mc measuredConn) Write(b []byte) (n int, err error) {
 	n, err = mc.Conn.Write(b)
 	if err != nil {
-		reportError(mc.addr, err)
+		reportError(mc.addr, err, "write")
 	}
 	return
 }
@@ -144,7 +145,7 @@ func (mc measuredConn) Write(b []byte) (n int, err error) {
 func (mc measuredConn) Close() (err error) {
 	err = mc.Conn.Close()
 	if err != nil {
-		reportError(mc.addr, err)
+		reportError(mc.addr, err, "close")
 	}
 	return
 }
