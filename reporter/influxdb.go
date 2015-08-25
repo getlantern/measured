@@ -41,13 +41,19 @@ func (ir *influxDBReporter) Submit(s *measured.Stats) error {
 	var buf bytes.Buffer
 
 	// https://influxdb.com/docs/v0.9/write_protocols/write_syntax.html
+	if s.Type == "" {
+		return fmt.Errorf("No measurement type supplied")
+	}
 	buf.WriteString(s.Type)
 	buf.WriteString(",")
 	count, i := len(s.Tags), 0
+	if count == 0 {
+		return fmt.Errorf("No tags supplied")
+	}
 	for k, v := range s.Tags {
 		i++
 		if v == "" {
-			continue
+			return fmt.Errorf("Tag %s is empty", k)
 		}
 		buf.WriteString(fmt.Sprintf("%s=%s", k, escapeStringField(v)))
 		if i < count {
@@ -57,14 +63,18 @@ func (ir *influxDBReporter) Submit(s *measured.Stats) error {
 	buf.WriteString(" ")
 
 	count, i = len(s.Fields), 0
+	if count == 0 {
+		return fmt.Errorf("No fields supplied")
+	}
 	for k, v := range s.Fields {
 		i++
 		switch v.(type) {
 		case string:
-			if s := v.(string); s == "" {
-				continue
+			s := v.(string)
+			if s == "" {
+				return fmt.Errorf("Field %s is empty", k)
 			}
-			buf.WriteString(fmt.Sprintf("%s=%s", k, v))
+			buf.WriteString(fmt.Sprintf("%s=%s", k, s))
 		case int:
 			buf.WriteString(fmt.Sprintf("%s=%di", k, v))
 		case float64:
