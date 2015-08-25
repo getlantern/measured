@@ -22,8 +22,12 @@ func TestWriteLineProtocol(t *testing.T) {
 	defer ts.Close()
 	ir := NewInfluxDBReporter(ts.URL, "test-user", "test-password", "testdb", nil)
 	e := ir.Submit(&measured.Stats{
-		Server: "fl-nl-xxx",
-		Errors: map[string]int{"test error": 3}})
+		Type: "errors",
+		Tags: map[string]string{
+			"server": "fl-nl-xxx",
+			"error":  "test error",
+		},
+		Fields: map[string]interface{}{"value": 3}})
 	assert.NoError(t, e, "", "")
 	req := <-chReq
 	assert.Equal(t, req[0], "test-user", "")
@@ -32,10 +36,13 @@ func TestWriteLineProtocol(t *testing.T) {
 
 }
 
-func TestRealServer(t *testing.T) {
+func TestRealProxyServer(t *testing.T) {
 	ir := NewInfluxDBReporter("https://influx.getiantem.org/", "test", "test", "lantern", nil)
 	e := ir.Submit(&measured.Stats{
-		Server: "fl-nl-xxx",
-		Errors: map[string]int{"test error": 3}})
+		Tags: map[string]string{
+			"server": "fl-nl-xxx",
+			"error":  "test error",
+		},
+		Fields: map[string]interface{}{"value": 3}})
 	assert.NoError(t, e, "", "")
 }

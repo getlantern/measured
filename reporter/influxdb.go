@@ -39,11 +39,39 @@ func NewInfluxDBReporter(influxURL, username, password, dbName string, httpClien
 
 func (ir *influxDBReporter) Submit(s *measured.Stats) error {
 	var buf bytes.Buffer
-	for k, v := range s.Errors {
-		buf.WriteString("errors,")
-		buf.WriteString(fmt.Sprintf("server=%s,error=%s ", s.Server, escapeStringField(k)))
-		buf.WriteString(fmt.Sprintf("value=%di %d\n", v, time.Now().UnixNano()))
+
+	// https://influxdb.com/docs/v0.9/write_protocols/write_syntax.html
+	buf.WriteString(s.Type)
+	buf.WriteString(",")
+	count, i := len(s.Tags), 0
+	for k, v := range s.Tags {
+		buf.WriteString(fmt.Sprintf("%s=%s", k, escapeStringField(v)))
+		i++
+		if i < count {
+			buf.WriteString(",")
+		}
 	}
+	buf.WriteString(" ")
+
+	count, i = len(s.Fields), 0
+	for k, v := range s.Fields {
+		switch v.(type) {
+		case string:
+			buf.WriteString(fmt.Sprintf("%s=%s", k, v))
+		case int:
+			buf.WriteString(fmt.Sprintf("%s=%di", k, v))
+		case float64:
+			buf.WriteString(fmt.Sprintf("%s=%f", k, v))
+		default:
+			panic("Unsupported field type")
+		}
+		i++
+		if i < count {
+			buf.WriteString(",")
+		}
+	}
+
+	buf.WriteString(fmt.Sprintf(" %d\n", time.Now().UnixNano()))
 	req, err := http.NewRequest("POST", ir.url, &buf)
 	if err != nil {
 		log.Errorf("Error make POST request to %s: %s", ir.url, err)

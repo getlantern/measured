@@ -13,11 +13,9 @@ import (
 
 // Stats encapsulates the statistics to report
 type Stats struct {
-	Country      string
-	Server       string
-	BytesRead    uint64
-	BytesWritten uint64
-	Errors       map[string]int
+	Type   string
+	Tags   map[string]string
+	Fields map[string]interface{}
 }
 
 // Reporter encapsulates different ways to report statistics
@@ -26,10 +24,11 @@ type Reporter interface {
 }
 
 var (
-	reporters []Reporter
-	log       = golog.LoggerFor("measured")
-	chStats   = make(chan *Stats)
-	chStop    = make(chan interface{})
+	reporters   []Reporter
+	defaultTags map[string]string
+	log         = golog.LoggerFor("measured")
+	chStats     = make(chan *Stats)
+	chStop      = make(chan interface{})
 )
 
 // DialFunc is the type of function measured can wrap
@@ -45,12 +44,17 @@ func AddReporter(r Reporter) {
 	reporters = append(reporters, r)
 }
 
-// Start runs the reporting process
+// SetDefaults set a few default tags sending every time
+func SetDefaults(defaults map[string]string) {
+	defaultTags = defaults
+}
+
+// Start runs the measured loop
 func Start() {
 	go run()
 }
 
-// Stop runs the reporting process
+// Stop stops the measured loop
 func Stop() {
 	log.Debug("Stopping measured loop...")
 	select {
@@ -59,7 +63,7 @@ func Stop() {
 	}
 }
 
-// Dialer wraps a dial function to measure various metrics
+// Dialer wraps a dial function to measure various statistics
 func Dialer(d DialFunc, via string) DialFunc {
 	return func(net, addr string) (net.Conn, error) {
 		c, err := d(net, addr)
@@ -76,6 +80,9 @@ func run() {
 		select {
 		case s := <-chStats:
 			for _, r := range reporters {
+				for k, v := range defaultTags {
+					s.Tags[k] = v
+				}
 				if err := r.Submit(s); err != nil {
 					log.Errorf("report error to influxdb failed: %s", err)
 				} else {
@@ -93,8 +100,12 @@ func reportError(addr string, err error) {
 	e := strings.Trim(splitted[len(splitted)-1], " ")
 	select {
 	case chStats <- &Stats{
-		Server: addr,
-		Errors: map[string]int{e: 1},
+		Type: "errors",
+		Tags: map[string]string{
+			"server": addr,
+			"error":  e,
+		},
+		Fields: map[string]interface{}{"value": 1},
 	}:
 	default:
 	}
