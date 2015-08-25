@@ -79,7 +79,7 @@ func run() {
 				if err := r.Submit(s); err != nil {
 					log.Errorf("report error to influxdb failed: %s", err)
 				} else {
-					log.Tracef("submitted error to influxdb: %s", s)
+					log.Tracef("submitted error to influxdb: %v", s)
 				}
 			}
 		case <-chStop:

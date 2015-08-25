@@ -33,6 +33,7 @@ func NewInfluxDBReporter(influxURL, username, password, dbName string, httpClien
 		}
 	}
 	u := fmt.Sprintf("%s/write?db=%s", strings.TrimRight(influxURL, "/"), dbName)
+	log.Debugf("Created InfluxDB reporter: %s", u)
 	return &influxDBReporter{httpClient, u, username, password}
 }
 
