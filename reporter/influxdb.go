@@ -115,9 +115,6 @@ func escapeStringField(in string) string {
 		}
 		if in[i] == ',' || in[i] == '=' || in[i] == ' ' {
 			out = append(out, '\\')
-			out = append(out, in[i])
-			i += 1
-			continue
 		}
 		out = append(out, in[i])
 		i += 1

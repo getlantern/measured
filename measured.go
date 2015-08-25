@@ -60,6 +60,7 @@ func Stop() {
 	select {
 	case chStop <- nil:
 	default:
+		log.Error("Failed to send stop signal")
 	}
 }
 
@@ -90,6 +91,7 @@ func run() {
 				}
 			}
 		case <-chStop:
+			log.Debug("Measured loop stopped")
 			return
 		}
 	}
@@ -97,7 +99,11 @@ func run() {
 
 func reportError(addr string, err error) {
 	splitted := strings.Split(err.Error(), ":")
-	e := strings.Trim(splitted[len(splitted)-1], " ")
+	lastIndex := len(splitted) - 1
+	if lastIndex < 0 {
+		lastIndex = 0
+	}
+	e := strings.Trim(splitted[lastIndex], " ")
 	select {
 	case chStats <- &Stats{
 		Type: "errors",
