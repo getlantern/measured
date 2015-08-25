@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"strings"
 	"time"
@@ -102,8 +101,6 @@ func (ir *influxDBReporter) Submit(s *measured.Stats) error {
 	if rsp.StatusCode != 204 {
 		err = fmt.Errorf("Error response from %s: %s", ir.url, rsp.Status)
 		log.Error(err)
-		b, _ := ioutil.ReadAll(rsp.Body)
-		log.Debug(string(b))
 		return err
 	}
 	return err
