@@ -7,6 +7,7 @@ package measured
 import (
 	"net"
 	"strings"
+	"sync/atomic"
 
 	"github.com/getlantern/golog"
 )
@@ -25,11 +26,16 @@ type Reporter interface {
 
 var (
 	reporters   []Reporter
-	defaultTags map[string]string
+	defaultTags atomic.Value
+	running     uint32
 	log         = golog.LoggerFor("measured")
 	chStats     = make(chan *Stats)
 	chStop      = make(chan interface{})
 )
+
+func init() {
+	defaultTags.Store(map[string]string{})
+}
 
 // DialFunc is the type of function measured can wrap
 type DialFunc func(net, addr string) (net.Conn, error)
@@ -46,7 +52,7 @@ func AddReporter(r Reporter) {
 
 // SetDefaults set a few default tags sending every time
 func SetDefaults(defaults map[string]string) {
-	defaultTags = defaults
+	defaultTags.Store(defaults)
 }
 
 // Start runs the measured loop
@@ -56,6 +62,9 @@ func Start() {
 
 // Stop stops the measured loop
 func Stop() {
+	if atomic.LoadUint32(&running) == 0 {
+		return
+	}
 	log.Debug("Stopping measured loop...")
 	select {
 	case chStop <- nil:
@@ -77,21 +86,24 @@ func Dialer(d DialFunc, via string) DialFunc {
 
 func run() {
 	log.Debug("Measured loop started")
+	atomic.StoreUint32(&running, 1)
 	for {
 		select {
 		case s := <-chStats:
+			defaults := defaultTags.Load().(map[string]string)
 			for _, r := range reporters {
-				for k, v := range defaultTags {
+				for k, v := range defaults {
 					s.Tags[k] = v
 				}
 				if err := r.Submit(s); err != nil {
-					log.Errorf("report error to influxdb failed: %s", err)
+					log.Errorf("Failed to report error to influxdb: %s", err)
 				} else {
-					log.Tracef("submitted error to influxdb: %v", s)
+					log.Tracef("Submitted error to influxdb: %v", s)
 				}
 			}
 		case <-chStop:
 			log.Debug("Measured loop stopped")
+			atomic.StoreUint32(&running, 0)
 			return
 		}
 	}
