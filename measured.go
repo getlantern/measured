@@ -127,6 +127,7 @@ func reportError(addr string, err error, phase string) {
 		Fields: map[string]interface{}{"value": 1},
 	}:
 	default:
+		log.Error("Failed to send stats to reporters")
 	}
 }
 
