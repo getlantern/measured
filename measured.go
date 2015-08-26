@@ -29,8 +29,9 @@ var (
 	defaultTags atomic.Value
 	running     uint32
 	log         = golog.LoggerFor("measured")
-	chStats     = make(chan *Stats)
-	chStop      = make(chan interface{})
+	// to avoid blocking when busily reporting stats
+	chStats = make(chan *Stats, 10)
+	chStop  = make(chan interface{})
 )
 
 func init() {
