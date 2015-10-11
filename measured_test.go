@@ -60,6 +60,7 @@ func TestReportStats(t *testing.T) {
 	// start server with byte counting
 	l, err := net.Listen("tcp", ":0")
 	if assert.NoError(t, err, "Listen should not fail") {
+		// large enough interval so it will only report stats in Close()
 		ml := Listener(l, 10*time.Second)
 		s := http.Server{
 			Handler: http.NotFoundHandler(),
@@ -79,7 +80,8 @@ func TestReportStats(t *testing.T) {
 	// start client with byte counting
 	c := http.Client{
 		Transport: &http.Transport{
-			Dial: Dialer(net.Dial, 10*time.Second),
+			// carefully chosen interval to report another once before Close()
+			Dial: Dialer(net.Dial, 60*time.Millisecond),
 		},
 	}
 	req, _ := http.NewRequest("GET", "http://"+l.Addr().String(), nil)
@@ -91,16 +93,17 @@ func TestReportStats(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 	// verify both client and server stats
-	if assert.Equal(t, 2, len(nr.s)) {
+	if assert.Equal(t, 3, len(nr.s)) {
 		assert.Equal(t, "stats", nr.s[0].Type, "should report server stats")
 		assert.Equal(t, remoteAddr, nr.s[0].Tags["remoteAddr"], "should report server stats with remote addr")
 		assert.Equal(t, bytesIn, nr.s[0].Fields["bytesIn"], "should report server stats with bytes in")
 		assert.Equal(t, bytesOut, nr.s[0].Fields["bytesOut"], "should report server stats with bytes out")
-
-		assert.Equal(t, "stats", nr.s[1].Type, "should report client stats")
-		assert.Equal(t, l.Addr().String(), nr.s[1].Tags["remoteAddr"], "should report server as remote addr")
-		assert.Equal(t, bytesOut, nr.s[1].Fields["bytesIn"], "should report same byte count as server")
-		assert.Equal(t, bytesIn, nr.s[1].Fields["bytesOut"], "should report same byte count as server")
+		for i := 1; i <= 2; i++ {
+			assert.Equal(t, "stats", nr.s[i].Type, "should report client stats")
+			assert.Equal(t, l.Addr().String(), nr.s[i].Tags["remoteAddr"], "should report server as remote addr")
+			assert.Equal(t, bytesOut, nr.s[i].Fields["bytesIn"], "should report same byte count as server")
+			assert.Equal(t, bytesIn, nr.s[i].Fields["bytesOut"], "should report same byte count as server")
+		}
 	}
 }
 
