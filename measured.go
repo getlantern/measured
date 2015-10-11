@@ -13,11 +13,19 @@ import (
 	"github.com/getlantern/golog"
 )
 
+type Tags map[string]string
+
+func (t *Tags) Compare(rhs *Tags) int {
+	return 0
+}
+
+type Fields map[string]interface{}
+
 // Stats encapsulates the statistics to report
 type Stats struct {
 	Type   string
-	Tags   map[string]string
-	Fields map[string]interface{}
+	Tags   Tags
+	Fields Fields
 }
 
 // Reporter encapsulates different ways to report statistics
@@ -113,10 +121,10 @@ func run() {
 		select {
 		case s := <-chStats:
 			defaults := defaultTags.Load().(map[string]string)
+			for k, v := range defaults {
+				s.Tags[k] = v
+			}
 			for _, r := range reporters.Load().([]Reporter) {
-				for k, v := range defaults {
-					s.Tags[k] = v
-				}
 				if err := r.Submit(s); err != nil {
 					log.Errorf("Failed to report error to influxdb: %s", err)
 				} else {
@@ -202,12 +210,12 @@ func reportError(remoteAddr string, err error, phase string) {
 	select {
 	case chStats <- &Stats{
 		Type: "errors",
-		Tags: map[string]string{
+		Tags: Tags{
 			"remoteAddr": remoteAddr,
 			"error":      e,
 			"phase":      phase,
 		},
-		Fields: map[string]interface{}{"value": 1},
+		Fields: Fields{"value": 1},
 	}:
 	default:
 		log.Error("Failed to send stats to reporters")
@@ -218,10 +226,10 @@ func reportStats(remoteAddr string, bytesIn uint64, bytesOut uint64) {
 	select {
 	case chStats <- &Stats{
 		Type: "stats",
-		Tags: map[string]string{
+		Tags: Tags{
 			"remoteAddr": remoteAddr,
 		},
-		Fields: map[string]interface{}{
+		Fields: Fields{
 			"bytesIn":  bytesIn,
 			"bytesOut": bytesOut,
 		},
