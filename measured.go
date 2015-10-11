@@ -93,7 +93,7 @@ type measuredListener struct {
 	interval time.Duration
 }
 
-// Accept wraps the function of an net.Listener to return an connection
+// Accept wraps the same function of net.Listener to return a connection
 // which measures various statistics
 func (l *measuredListener) Accept() (c net.Conn, err error) {
 	c, err = l.Listener.Accept()

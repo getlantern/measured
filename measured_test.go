@@ -68,7 +68,7 @@ func TestReportStats(t *testing.T) {
 					mc := c.(*measuredConn)
 					bytesIn = mc.bytesIn
 					bytesOut = mc.bytesOut
-					remoteAddr = mc.RemoteAddr().String()
+					remoteAddr = mc.remoteAddr
 					mc.Close()
 				}
 			},
