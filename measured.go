@@ -28,9 +28,8 @@ type Reporter interface {
 var (
 	reporters   atomic.Value
 	defaultTags atomic.Value
-	running     uint32
 	log         = golog.LoggerFor("measured")
-	// to avoremoteAddr blocking when busily reporting stats
+	// to avoid blocking when busily reporting stats
 	chStats = make(chan *Stats, 10)
 	chStop  = make(chan interface{})
 )
@@ -65,9 +64,6 @@ func Start() {
 
 // Stop stops the measured loop
 func Stop() {
-	if atomic.LoadUint32(&running) == 0 {
-		return
-	}
 	log.Debug("Stopping measured loop...")
 	select {
 	case chStop <- nil:
@@ -77,13 +73,13 @@ func Stop() {
 }
 
 // Dialer wraps a dial function to measure various statistics
-func Dialer(d DialFunc, remoteAddr string, interval time.Duration) DialFunc {
+func Dialer(d DialFunc, interval time.Duration) DialFunc {
 	return func(net, addr string) (net.Conn, error) {
 		c, err := d(net, addr)
 		if err != nil {
-			reportError(remoteAddr, err, "dial")
+			reportError(addr, err, "dial")
 		}
-		return newMeasuredConn(c, remoteAddr, interval), err
+		return newMeasuredConn(c, addr, interval), err
 	}
 }
 
@@ -113,7 +109,6 @@ func (l *measuredListener) Accept() (c net.Conn, err error) {
 
 func run() {
 	log.Debug("Measured loop started")
-	atomic.StoreUint32(&running, 1)
 	for {
 		select {
 		case s := <-chStats:
@@ -130,7 +125,6 @@ func run() {
 			}
 		case <-chStop:
 			log.Debug("Measured loop stopped")
-			atomic.StoreUint32(&running, 0)
 			return
 		}
 	}
