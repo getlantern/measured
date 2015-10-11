@@ -21,7 +21,7 @@ func (nr *mockReporter) Submit(s *Stats) error {
 }
 
 func TestReportError(t *testing.T) {
-	nr := startWithmockReporter()
+	nr := startWithMockReporter()
 	defer Stop()
 	d := Dialer(net.Dial, 10*time.Second)
 	_, _ = d("tcp", "localhost:9999")
@@ -41,7 +41,7 @@ func TestReportError(t *testing.T) {
 }
 
 func TestDefaultTags(t *testing.T) {
-	nr := startWithmockReporter()
+	nr := startWithMockReporter()
 	defer Stop()
 	SetDefaults(map[string]string{"app": "test-app"})
 	reportError("test-remoteAddr", fmt.Errorf("test-error"), "dial-phase")
@@ -52,7 +52,7 @@ func TestDefaultTags(t *testing.T) {
 }
 
 func TestReportStats(t *testing.T) {
-	nr := startWithmockReporter()
+	nr := startWithMockReporter()
 	defer Stop()
 	var bytesIn, bytesOut uint64
 	var remoteAddr string
@@ -107,7 +107,7 @@ func TestReportStats(t *testing.T) {
 	}
 }
 
-func startWithmockReporter() *mockReporter {
+func startWithMockReporter() *mockReporter {
 	nr := mockReporter{}
 	Reset()
 	AddReporter(&nr)
