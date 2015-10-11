@@ -85,6 +85,29 @@ func Dialer(d DialFunc, via string) DialFunc {
 	}
 }
 
+// Dialer wraps a dial function to measure various statistics
+func Listener(l net.Listener) net.Listener {
+	return &measuredListener{l}
+}
+
+type measuredListener struct {
+	net.Listener
+}
+
+// Accept wraps the function of an net.Listener to return an connection
+// which measures various statistics
+func (l *measuredListener) Accept() (c net.Conn, err error) {
+	c, err = l.Listener.Accept()
+	if err != nil {
+		return
+	}
+	addr := ""
+	if ra := c.RemoteAddr(); ra != nil {
+		addr = ra.String()
+	}
+	return measuredConn{c, addr}, err
+}
+
 func run() {
 	log.Debug("Measured loop started")
 	atomic.StoreUint32(&running, 1)

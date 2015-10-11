@@ -3,6 +3,7 @@ package measured
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"runtime"
 	"testing"
 	"time"
@@ -54,4 +55,14 @@ func TestDefaultTags(t *testing.T) {
 	if assert.Equal(t, 1, len(nr.s)) {
 		assert.Equal(t, "test-app", nr.s[0].Tags["app"], "should report default tags")
 	}
+}
+
+func TestListener(t *testing.T) {
+	l, err := net.Listen("tcp", ":0")
+	if assert.NoError(t, err, "Listen should not fail") {
+		ml := Listener(l)
+		s := http.Server{Handler: http.NotFoundHandler()}
+		go s.Serve(ml)
+	}
+	_, _ = http.Get("http://" + l.Addr().String())
 }
