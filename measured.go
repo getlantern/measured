@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/getlantern/golog"
 )
@@ -25,17 +26,17 @@ type Reporter interface {
 }
 
 var (
-	reporters   []Reporter
+	reporters   atomic.Value
 	defaultTags atomic.Value
 	running     uint32
 	log         = golog.LoggerFor("measured")
-	// to avoid blocking when busily reporting stats
+	// to avoremoteAddr blocking when busily reporting stats
 	chStats = make(chan *Stats, 10)
 	chStop  = make(chan interface{})
 )
 
 func init() {
-	defaultTags.Store(map[string]string{})
+	Reset()
 }
 
 // DialFunc is the type of function measured can wrap
@@ -43,12 +44,13 @@ type DialFunc func(net, addr string) (net.Conn, error)
 
 // Reset resets the measured package
 func Reset() {
-	reporters = []Reporter{}
+	defaultTags.Store(map[string]string{})
+	reporters.Store([]Reporter{})
 }
 
 // AddReporter add a new way to report statistics
 func AddReporter(r Reporter) {
-	reporters = append(reporters, r)
+	reporters.Store(append(reporters.Load().([]Reporter), r))
 }
 
 // SetDefaults set a few default tags sending every time
@@ -75,23 +77,24 @@ func Stop() {
 }
 
 // Dialer wraps a dial function to measure various statistics
-func Dialer(d DialFunc, via string) DialFunc {
+func Dialer(d DialFunc, remoteAddr string, interval time.Duration) DialFunc {
 	return func(net, addr string) (net.Conn, error) {
 		c, err := d(net, addr)
 		if err != nil {
-			reportError(via, err, "dial")
+			reportError(remoteAddr, err, "dial")
 		}
-		return measuredConn{c, via}, err
+		return newMeasuredConn(c, remoteAddr, interval), err
 	}
 }
 
 // Dialer wraps a dial function to measure various statistics
-func Listener(l net.Listener) net.Listener {
-	return &measuredListener{l}
+func Listener(l net.Listener, interval time.Duration) net.Listener {
+	return &measuredListener{l, interval}
 }
 
 type measuredListener struct {
 	net.Listener
+	interval time.Duration
 }
 
 // Accept wraps the function of an net.Listener to return an connection
@@ -105,7 +108,7 @@ func (l *measuredListener) Accept() (c net.Conn, err error) {
 	if ra := c.RemoteAddr(); ra != nil {
 		addr = ra.String()
 	}
-	return measuredConn{c, addr}, err
+	return newMeasuredConn(c, addr, l.interval), err
 }
 
 func run() {
@@ -115,7 +118,7 @@ func run() {
 		select {
 		case s := <-chStats:
 			defaults := defaultTags.Load().(map[string]string)
-			for _, r := range reporters {
+			for _, r := range reporters.Load().([]Reporter) {
 				for k, v := range defaults {
 					s.Tags[k] = v
 				}
@@ -133,7 +136,69 @@ func run() {
 	}
 }
 
-func reportError(addr string, err error, phase string) {
+type measuredConn struct {
+	net.Conn
+	remoteAddr string
+	bytesIn    uint64
+	bytesOut   uint64
+	chStop     chan interface{}
+}
+
+func newMeasuredConn(c net.Conn, remoteAddr string, interval time.Duration) net.Conn {
+	mc := &measuredConn{Conn: c, remoteAddr: remoteAddr, chStop: make(chan interface{})}
+	ticker := time.NewTicker(interval)
+	go func() {
+		for {
+			select {
+			case _ = <-ticker.C:
+				mc.reportStats()
+			case _ = <-chStop:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+	return mc
+}
+
+// Read() implements the function from net.Conn
+func (mc *measuredConn) Read(b []byte) (n int, err error) {
+	n, err = mc.Conn.Read(b)
+	if err != nil {
+		reportError(mc.remoteAddr, err, "read")
+	}
+	atomic.AddUint64(&mc.bytesIn, uint64(n))
+	return
+}
+
+// Write() implements the function from net.Conn
+func (mc *measuredConn) Write(b []byte) (n int, err error) {
+	n, err = mc.Conn.Write(b)
+	if err != nil {
+		reportError(mc.remoteAddr, err, "write")
+	}
+	atomic.AddUint64(&mc.bytesOut, uint64(n))
+	return
+}
+
+// Close() implements the function from net.Conn
+func (mc *measuredConn) Close() (err error) {
+	err = mc.Conn.Close()
+	if err != nil {
+		reportError(mc.remoteAddr, err, "close")
+	}
+	mc.reportStats()
+	mc.chStop <- nil
+	return
+}
+
+func (mc *measuredConn) reportStats() {
+	reportStats(mc.remoteAddr,
+		atomic.LoadUint64(&mc.bytesIn),
+		atomic.LoadUint64(&mc.bytesOut))
+}
+
+func reportError(remoteAddr string, err error, phase string) {
 	splitted := strings.Split(err.Error(), ":")
 	lastIndex := len(splitted) - 1
 	if lastIndex < 0 {
@@ -144,9 +209,9 @@ func reportError(addr string, err error, phase string) {
 	case chStats <- &Stats{
 		Type: "errors",
 		Tags: map[string]string{
-			"server": addr,
-			"error":  e,
-			"phase":  phase,
+			"remoteAddr": remoteAddr,
+			"error":      e,
+			"phase":      phase,
 		},
 		Fields: map[string]interface{}{"value": 1},
 	}:
@@ -155,34 +220,19 @@ func reportError(addr string, err error, phase string) {
 	}
 }
 
-type measuredConn struct {
-	net.Conn
-	addr string
-}
-
-// Read() implements the function from net.Conn
-func (mc measuredConn) Read(b []byte) (n int, err error) {
-	n, err = mc.Conn.Read(b)
-	if err != nil {
-		reportError(mc.addr, err, "read")
+func reportStats(remoteAddr string, bytesIn uint64, bytesOut uint64) {
+	select {
+	case chStats <- &Stats{
+		Type: "stats",
+		Tags: map[string]string{
+			"remoteAddr": remoteAddr,
+		},
+		Fields: map[string]interface{}{
+			"bytesIn":  bytesIn,
+			"bytesOut": bytesOut,
+		},
+	}:
+	default:
+		log.Error("Failed to send stats to reporters")
 	}
-	return
-}
-
-// Write() implements the function from net.Conn
-func (mc measuredConn) Write(b []byte) (n int, err error) {
-	n, err = mc.Conn.Write(b)
-	if err != nil {
-		reportError(mc.addr, err, "write")
-	}
-	return
-}
-
-// Close() implements the function from net.Conn
-func (mc measuredConn) Close() (err error) {
-	err = mc.Conn.Close()
-	if err != nil {
-		reportError(mc.addr, err, "close")
-	}
-	return
 }
