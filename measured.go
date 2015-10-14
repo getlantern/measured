@@ -137,9 +137,14 @@ func run() {
 // MeasuredConn wraps any net.Conn to add statistics
 type MeasuredConn struct {
 	net.Conn
-	BytesIn  uint64
+	// total bytes read from this connection
+	BytesIn uint64
+	// total bytes wrote to this connection
 	BytesOut uint64
-	chStop   chan interface{}
+	// extra tags related to this connection, will submit to reporters eventually
+	// not protected
+	ExtraTags map[string]string
+	chStop    chan interface{}
 }
 
 func newMeasuredConn(c net.Conn, interval time.Duration) net.Conn {
