@@ -58,7 +58,7 @@ func TestReportStats(t *testing.T) {
 	var remoteAddr string
 
 	// start server with byte counting
-	l, err := net.Listen("tcp", ":0")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if assert.NoError(t, err, "Listen should not fail") {
 		// large enough interval so it will only report stats in Close()
 		ml := Listener(l, 10*time.Second)
@@ -66,10 +66,10 @@ func TestReportStats(t *testing.T) {
 			Handler: http.NotFoundHandler(),
 			ConnState: func(c net.Conn, s http.ConnState) {
 				if s == http.StateIdle {
-					mc := c.(*measuredConn)
-					bytesIn = mc.bytesIn
-					bytesOut = mc.bytesOut
-					remoteAddr = mc.remoteAddr
+					remoteAddr = c.RemoteAddr().String()
+					mc := c.(*MeasuredConn)
+					bytesIn = mc.BytesIn
+					bytesOut = mc.BytesOut
 					mc.Close()
 				}
 			},
@@ -88,7 +88,7 @@ func TestReportStats(t *testing.T) {
 	resp, _ := c.Do(req)
 	assert.Equal(t, 404, resp.StatusCode)
 	resp.Body.Close()
-	assert.Equal(t, uint64(92), bytesIn, "")
+	assert.Equal(t, uint64(97), bytesIn, "")
 	assert.Equal(t, uint64(143), bytesOut, "")
 
 	time.Sleep(100 * time.Millisecond)
@@ -101,8 +101,8 @@ func TestReportStats(t *testing.T) {
 		for i := 1; i <= 2; i++ {
 			assert.Equal(t, "stats", nr.s[i].Type, "should report client stats")
 			assert.Equal(t, l.Addr().String(), nr.s[i].Tags["remoteAddr"], "should report server as remote addr")
-			assert.Equal(t, bytesOut, nr.s[i].Fields["bytesIn"], "should report same byte count as server")
 			assert.Equal(t, bytesIn, nr.s[i].Fields["bytesOut"], "should report same byte count as server")
+			assert.Equal(t, bytesOut, nr.s[i].Fields["bytesIn"], "should report same byte count as server")
 		}
 	}
 }

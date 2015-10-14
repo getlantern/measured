@@ -87,7 +87,7 @@ func Dialer(d DialFunc, interval time.Duration) DialFunc {
 		if err != nil {
 			reportError(addr, err, "dial")
 		}
-		return newMeasuredConn(c, addr, interval), err
+		return newMeasuredConn(c, interval), err
 	}
 }
 
@@ -108,11 +108,7 @@ func (l *measuredListener) Accept() (c net.Conn, err error) {
 	if err != nil {
 		return
 	}
-	addr := ""
-	if ra := c.RemoteAddr(); ra != nil {
-		addr = ra.String()
-	}
-	return newMeasuredConn(c, addr, l.interval), err
+	return newMeasuredConn(c, l.interval), err
 }
 
 func run() {
@@ -138,16 +134,16 @@ func run() {
 	}
 }
 
-type measuredConn struct {
+// MeasuredConn wraps any net.Conn to add statistics
+type MeasuredConn struct {
 	net.Conn
-	remoteAddr string
-	bytesIn    uint64
-	bytesOut   uint64
-	chStop     chan interface{}
+	BytesIn  uint64
+	BytesOut uint64
+	chStop   chan interface{}
 }
 
-func newMeasuredConn(c net.Conn, remoteAddr string, interval time.Duration) net.Conn {
-	mc := &measuredConn{Conn: c, remoteAddr: remoteAddr, chStop: make(chan interface{})}
+func newMeasuredConn(c net.Conn, interval time.Duration) net.Conn {
+	mc := &MeasuredConn{Conn: c, chStop: make(chan interface{})}
 	ticker := time.NewTicker(interval)
 	go func() {
 		for {
@@ -164,40 +160,55 @@ func newMeasuredConn(c net.Conn, remoteAddr string, interval time.Duration) net.
 }
 
 // Read() implements the function from net.Conn
-func (mc *measuredConn) Read(b []byte) (n int, err error) {
+func (mc *MeasuredConn) Read(b []byte) (n int, err error) {
 	n, err = mc.Conn.Read(b)
 	if err != nil {
-		reportError(mc.remoteAddr, err, "read")
+
+		mc.reportError(err, "read")
 	}
-	atomic.AddUint64(&mc.bytesIn, uint64(n))
+	atomic.AddUint64(&mc.BytesIn, uint64(n))
 	return
 }
 
 // Write() implements the function from net.Conn
-func (mc *measuredConn) Write(b []byte) (n int, err error) {
+func (mc *MeasuredConn) Write(b []byte) (n int, err error) {
 	n, err = mc.Conn.Write(b)
 	if err != nil {
-		reportError(mc.remoteAddr, err, "write")
+		mc.reportError(err, "write")
 	}
-	atomic.AddUint64(&mc.bytesOut, uint64(n))
+	atomic.AddUint64(&mc.BytesOut, uint64(n))
 	return
 }
 
 // Close() implements the function from net.Conn
-func (mc *measuredConn) Close() (err error) {
+func (mc *MeasuredConn) Close() (err error) {
 	err = mc.Conn.Close()
 	if err != nil {
-		reportError(mc.remoteAddr, err, "close")
+		mc.reportError(err, "close")
 	}
 	mc.reportStats()
 	mc.chStop <- nil
 	return
 }
 
-func (mc *measuredConn) reportStats() {
-	reportStats(mc.remoteAddr,
-		atomic.LoadUint64(&mc.bytesIn),
-		atomic.LoadUint64(&mc.bytesOut))
+func (mc *MeasuredConn) reportError(err error, phase string) {
+	ra := mc.Conn.RemoteAddr()
+	if ra == nil {
+		log.Error("Remote address is nil, not report error")
+		return
+	}
+	reportError(ra.String(), err, phase)
+}
+
+func (mc *MeasuredConn) reportStats() {
+	ra := mc.Conn.RemoteAddr()
+	if ra == nil {
+		log.Error("Remote address is nil, not report stats")
+		return
+	}
+	reportStats(ra.String(),
+		atomic.LoadUint64(&mc.BytesIn),
+		atomic.LoadUint64(&mc.BytesOut))
 }
 
 func reportError(remoteAddr string, err error, phase string) {
@@ -222,7 +233,7 @@ func reportError(remoteAddr string, err error, phase string) {
 	}
 }
 
-func reportStats(remoteAddr string, bytesIn uint64, bytesOut uint64) {
+func reportStats(remoteAddr string, BytesIn uint64, BytesOut uint64) {
 	select {
 	case chStats <- &Stats{
 		Type: "stats",
@@ -230,8 +241,8 @@ func reportStats(remoteAddr string, bytesIn uint64, bytesOut uint64) {
 			"remoteAddr": remoteAddr,
 		},
 		Fields: Fields{
-			"bytesIn":  bytesIn,
-			"bytesOut": bytesOut,
+			"bytesIn":  BytesIn,
+			"bytesOut": BytesOut,
 		},
 	}:
 	default:
