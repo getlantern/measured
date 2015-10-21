@@ -1,6 +1,11 @@
 /*
-Package measured wraps a dialer to measure the delay, throughput and errors of the connection made.
-A list of reporters can be plugged in to distribute the results to different target.
+Package measured wraps a dialer/listener to measure the delay, throughput and
+errors of the connection made/accepted.
+
+Throughput is represented by total bytes sent/received between each interval.
+
+A list of reporters can be plugged in to distribute the results to different
+target.
 */
 package measured
 
@@ -148,7 +153,7 @@ type MeasuredConn struct {
 }
 
 func newMeasuredConn(c net.Conn, interval time.Duration) net.Conn {
-	mc := &MeasuredConn{Conn: c, chStop: make(chan interface{})}
+	mc := &MeasuredConn{Conn: c, ExtraTags: make(map[string]string), chStop: make(chan interface{})}
 	ticker := time.NewTicker(interval)
 	go func() {
 		for {
@@ -212,8 +217,8 @@ func (mc *MeasuredConn) reportStats() {
 		return
 	}
 	reportStats(ra.String(),
-		atomic.LoadUint64(&mc.BytesIn),
-		atomic.LoadUint64(&mc.BytesOut))
+		atomic.SwapUint64(&mc.BytesIn, 0),
+		atomic.SwapUint64(&mc.BytesOut, 0))
 }
 
 func reportError(remoteAddr string, err error, phase string) {

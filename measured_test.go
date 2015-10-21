@@ -98,12 +98,16 @@ func TestReportStats(t *testing.T) {
 		assert.Equal(t, remoteAddr, nr.s[0].Tags["remoteAddr"], "should report server stats with remote addr")
 		assert.Equal(t, bytesIn, nr.s[0].Fields["bytesIn"], "should report server stats with bytes in")
 		assert.Equal(t, bytesOut, nr.s[0].Fields["bytesOut"], "should report server stats with bytes out")
-		for i := 1; i <= 2; i++ {
-			assert.Equal(t, "stats", nr.s[i].Type, "should report client stats")
-			assert.Equal(t, l.Addr().String(), nr.s[i].Tags["remoteAddr"], "should report server as remote addr")
-			assert.Equal(t, bytesIn, nr.s[i].Fields["bytesOut"], "should report same byte count as server")
-			assert.Equal(t, bytesOut, nr.s[i].Fields["bytesIn"], "should report same byte count as server")
-		}
+
+		assert.Equal(t, "stats", nr.s[1].Type, "should report client stats each interval")
+		assert.Equal(t, l.Addr().String(), nr.s[1].Tags["remoteAddr"], "should report server as remote addr")
+		assert.Equal(t, bytesIn, nr.s[1].Fields["bytesOut"], "should report same byte count as server")
+		assert.Equal(t, bytesOut, nr.s[1].Fields["bytesIn"], "should report same byte count as server")
+
+		assert.Equal(t, "stats", nr.s[2].Type, "should report client stats when close")
+		assert.Equal(t, l.Addr().String(), nr.s[2].Tags["remoteAddr"], "should report server as remote addr")
+		assert.Equal(t, uint64(0), nr.s[2].Fields["bytesOut"], "should only report increased byte count")
+		assert.Equal(t, uint64(0), nr.s[2].Fields["bytesIn"], "should only report increased byte count")
 	}
 }
 
