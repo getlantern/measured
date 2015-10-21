@@ -1,11 +1,10 @@
 /*
-Package measured wraps a dialer/listener to measure the delay, throughput and
-errors of the connection made/accepted.
+Package measured wraps a dialer/listener to measure the latency (only for
+client connection), throughput and errors of the connection made/accepted.
 
-Throughput is represented by total bytes sent/received between each interval.
+Throughput is represented as total bytes sent/received between each interval.
 
-A list of reporters can be plugged in to distribute the results to different
-target.
+A list of reporters can be plugged in to send the results to different target.
 */
 package measured
 
@@ -27,24 +26,50 @@ func (t *Tags) Compare(rhs *Tags) int {
 type Fields map[string]interface{}
 
 // Stats encapsulates the statistics to report
-type Stats struct {
-	Type   string
-	Tags   Tags
-	Fields Fields
+type Stat interface {
+	Type() string
 }
+
+type Error struct {
+	RemoteAddr string
+	Error      string
+	Phase      string
+}
+
+type Latency struct {
+	RemoteAddr string
+	Latency    time.Duration
+}
+
+type Traffic struct {
+	RemoteAddr string
+	BytesIn    uint64
+	BytesOut   uint64
+}
+
+const (
+	typeError   = "error"
+	typeLatency = "latency"
+	typeTraffic = "traffic"
+)
+
+func (e Error) Type() string   { return typeError }
+func (e Latency) Type() string { return typeLatency }
+func (e Traffic) Type() string { return typeTraffic }
 
 // Reporter encapsulates different ways to report statistics
 type Reporter interface {
-	Submit(*Stats) error
+	ReportError(*Error) error
+	ReportLatency(*Latency) error
+	ReportTraffic(*Traffic) error
 }
 
 var (
-	reporters   atomic.Value
-	defaultTags atomic.Value
-	log         = golog.LoggerFor("measured")
+	reporters atomic.Value
+	log       = golog.LoggerFor("measured")
 	// to avoid blocking when busily reporting stats
-	chStats = make(chan *Stats, 10)
-	chStop  = make(chan interface{})
+	chStat = make(chan Stat, 10)
+	chStop = make(chan interface{})
 )
 
 func init() {
@@ -56,18 +81,12 @@ type DialFunc func(net, addr string) (net.Conn, error)
 
 // Reset resets the measured package
 func Reset() {
-	defaultTags.Store(map[string]string{})
 	reporters.Store([]Reporter{})
 }
 
 // AddReporter add a new way to report statistics
 func AddReporter(r Reporter) {
 	reporters.Store(append(reporters.Load().([]Reporter), r))
-}
-
-// SetDefaults set a few default tags sending every time
-func SetDefaults(defaults map[string]string) {
-	defaultTags.Store(defaults)
 }
 
 // Start runs the measured loop
@@ -116,17 +135,26 @@ func (l *measuredListener) Accept() (c net.Conn, err error) {
 	return newConn(c, l.interval), err
 }
 
+type reportFunc func(r Reporter)
+
+func eachReporter(f reportFunc) {
+}
 func run() {
 	log.Debug("Measured loop started")
 	for {
 		select {
-		case s := <-chStats:
-			defaults := defaultTags.Load().(map[string]string)
-			for k, v := range defaults {
-				s.Tags[k] = v
+		case s := <-chStat:
+			var f func(r Reporter) error
+			switch s.Type() {
+			case typeError:
+				f = func(r Reporter) error { return r.ReportError(s.(*Error)) }
+			case typeLatency:
+				f = func(r Reporter) error { return r.ReportLatency(s.(*Latency)) }
+			case typeTraffic:
+				f = func(r Reporter) error { return r.ReportTraffic(s.(*Traffic)) }
 			}
 			for _, r := range reporters.Load().([]Reporter) {
-				if err := r.Submit(s); err != nil {
+				if err := f(r); err != nil {
 					log.Errorf("Failed to report error to influxdb: %s", err)
 				} else {
 					log.Tracef("Submitted error to influxdb: %v", s)
@@ -147,13 +175,11 @@ type Conn struct {
 	// total bytes wrote to this connection
 	BytesOut uint64
 	// extra tags related to this connection, will submit to reporters eventually
-	// not protected
-	ExtraTags map[string]string
-	chStop    chan interface{}
+	chStop chan interface{}
 }
 
 func newConn(c net.Conn, interval time.Duration) net.Conn {
-	mc := &Conn{Conn: c, ExtraTags: make(map[string]string), chStop: make(chan interface{})}
+	mc := &Conn{Conn: c, chStop: make(chan interface{})}
 	ticker := time.NewTicker(interval)
 	go func() {
 		for {
@@ -229,14 +255,10 @@ func reportError(remoteAddr string, err error, phase string) {
 	}
 	e := strings.Trim(splitted[lastIndex], " ")
 	select {
-	case chStats <- &Stats{
-		Type: "errors",
-		Tags: Tags{
-			"remoteAddr": remoteAddr,
-			"error":      e,
-			"phase":      phase,
-		},
-		Fields: Fields{"value": 1},
+	case chStat <- &Error{
+		RemoteAddr: remoteAddr,
+		Error:      e,
+		Phase:      phase,
 	}:
 	default:
 		log.Error("Failed to send stats to reporters")
@@ -245,15 +267,10 @@ func reportError(remoteAddr string, err error, phase string) {
 
 func reportStats(remoteAddr string, BytesIn uint64, BytesOut uint64) {
 	select {
-	case chStats <- &Stats{
-		Type: "stats",
-		Tags: Tags{
-			"remoteAddr": remoteAddr,
-		},
-		Fields: Fields{
-			"bytesIn":  BytesIn,
-			"bytesOut": BytesOut,
-		},
+	case chStat <- &Traffic{
+		RemoteAddr: remoteAddr,
+		BytesIn:    BytesIn,
+		BytesOut:   BytesOut,
 	}:
 	default:
 		log.Error("Failed to send stats to reporters")

@@ -17,10 +17,11 @@ var (
 )
 
 type influxDBReporter struct {
-	httpClient *http.Client
-	url        string
-	username   string
-	password   string
+	httpClient  *http.Client
+	url         string
+	username    string
+	password    string
+	defaultTags map[string]string
 }
 
 func NewInfluxDBReporter(influxURL, username, password, dbName string, httpClient *http.Client) measured.Reporter {
@@ -33,23 +34,54 @@ func NewInfluxDBReporter(influxURL, username, password, dbName string, httpClien
 	}
 	u := fmt.Sprintf("%s/write?db=%s", strings.TrimRight(influxURL, "/"), dbName)
 	log.Debugf("Created InfluxDB reporter: %s", u)
-	return &influxDBReporter{httpClient, u, username, password}
+	return &influxDBReporter{httpClient, u, username, password, make(map[string]string)}
 }
 
-func (ir *influxDBReporter) Submit(s *measured.Stats) error {
+func (ir *influxDBReporter) ReportError(s *measured.Error) error {
+	return ir.submit("errors",
+		map[string]string{
+			"remote-addr": s.RemoteAddr,
+			"error":       s.Error,
+		},
+		map[string]interface{}{
+			"count": 1,
+		},
+	)
+}
+
+func (ir *influxDBReporter) ReportLatency(s *measured.Latency) error {
+	return ir.submit("latency",
+		map[string]string{
+			"remote-addr": s.RemoteAddr,
+		},
+		map[string]interface{}{
+			"latency": s.Latency,
+		},
+	)
+}
+func (ir *influxDBReporter) ReportTraffic(s *measured.Traffic) error {
+	return ir.submit("traffic",
+		map[string]string{
+			"remote-addr": s.RemoteAddr,
+		},
+		map[string]interface{}{
+			"bytesIn":  s.BytesIn,
+			"bytesOut": s.BytesOut,
+		},
+	)
+}
+
+func (ir *influxDBReporter) submit(series string, tags map[string]string, fields map[string]interface{}) error {
 	var buf bytes.Buffer
 
-	// https://influxdb.com/docs/v0.9/write_protocols/write_syntax.html
-	if s.Type == "" {
-		return fmt.Errorf("No measurement type supplied")
-	}
-	buf.WriteString(s.Type)
+	// Ref https://influxdb.com/docs/v0.9/write_protocols/write_syntax.html
+	buf.WriteString(series)
 	buf.WriteString(",")
-	count, i := len(s.Tags), 0
+	count, i := len(tags), 0
 	if count == 0 {
 		return fmt.Errorf("No tags supplied")
 	}
-	for k, v := range s.Tags {
+	for k, v := range tags {
 		i++
 		if v == "" {
 			return fmt.Errorf("Tag %s is empty", k)
@@ -61,11 +93,11 @@ func (ir *influxDBReporter) Submit(s *measured.Stats) error {
 	}
 	buf.WriteString(" ")
 
-	count, i = len(s.Fields), 0
+	count, i = len(fields), 0
 	if count == 0 {
 		return fmt.Errorf("No fields supplied")
 	}
-	for k, v := range s.Fields {
+	for k, v := range fields {
 		i++
 		switch v.(type) {
 		case string:
