@@ -33,8 +33,8 @@ func TestWriteLineProtocol(t *testing.T) {
 	defer ts.Close()
 	ir := NewInfluxDBReporter(ts.URL, "test-user", "test-password", "testdb", nil)
 	e := ir.ReportError(&measured.Error{
-		RemoteAddr: "fl-nl-xxx",
-		Error:      "test error",
+		ID:    "fl-nl-xxx",
+		Error: "test error",
 	})
 	assert.NoError(t, e, "should send to influxdb without error")
 	req := <-chReq
@@ -43,7 +43,7 @@ func TestWriteLineProtocol(t *testing.T) {
 	assert.Equal(t, req[1], "test-password", "")
 	assert.Contains(t, req[2], "errors,", "should send measurement")
 	assert.Contains(t, req[2], "error=test\\ error", "should send tag")
-	assert.Contains(t, req[2], "remote-addr=fl-nl-xxx", "should send tag")
+	assert.Contains(t, req[2], "id=fl-nl-xxx", "should send tag")
 	assert.Contains(t, req[2], " count=1i ", "should send field")
 	assert.NotContains(t, req[2], ", count=1i", "should not have trailing comma")
 }
@@ -76,8 +76,8 @@ func TestCheckContent(t *testing.T) {
 func TestRealProxyServer(t *testing.T) {
 	ir := NewInfluxDBReporter("https://influx.getiantem.org/", "test", "test", "lantern", nil)
 	e := ir.ReportError(&measured.Error{
-		RemoteAddr: "fl-nl-xxx",
-		Error:      "test error",
+		ID:    "fl-nl-xxx",
+		Error: "test error",
 	})
 	assert.NoError(t, e, "should send to influxdb without error")
 }

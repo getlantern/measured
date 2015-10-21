@@ -31,20 +31,20 @@ type Stat interface {
 }
 
 type Error struct {
-	RemoteAddr string
-	Error      string
-	Phase      string
+	ID    string
+	Error string
+	Phase string
 }
 
 type Latency struct {
-	RemoteAddr string
-	Latency    time.Duration
+	ID      string
+	Latency time.Duration
 }
 
 type Traffic struct {
-	RemoteAddr string
-	BytesIn    uint64
-	BytesOut   uint64
+	ID       string
+	BytesIn  uint64
+	BytesOut uint64
 }
 
 const (
@@ -185,7 +185,7 @@ func newConn(c net.Conn, interval time.Duration) net.Conn {
 		for {
 			select {
 			case _ = <-ticker.C:
-				mc.reportStats()
+				mc.reportTraffic()
 			case _ = <-chStop:
 				ticker.Stop()
 				return
@@ -222,7 +222,7 @@ func (mc *Conn) Close() (err error) {
 	if err != nil {
 		mc.reportError(err, "close")
 	}
-	mc.reportStats()
+	mc.reportTraffic()
 	mc.chStop <- nil
 	return
 }
@@ -236,13 +236,13 @@ func (mc *Conn) reportError(err error, phase string) {
 	reportError(ra.String(), err, phase)
 }
 
-func (mc *Conn) reportStats() {
+func (mc *Conn) reportTraffic() {
 	ra := mc.Conn.RemoteAddr()
 	if ra == nil {
 		log.Error("Remote address is nil, not report stats")
 		return
 	}
-	reportStats(ra.String(),
+	reportTraffic(ra.String(),
 		atomic.SwapUint64(&mc.BytesIn, 0),
 		atomic.SwapUint64(&mc.BytesOut, 0))
 }
@@ -256,21 +256,21 @@ func reportError(remoteAddr string, err error, phase string) {
 	e := strings.Trim(splitted[lastIndex], " ")
 	select {
 	case chStat <- &Error{
-		RemoteAddr: remoteAddr,
-		Error:      e,
-		Phase:      phase,
+		ID:    remoteAddr,
+		Error: e,
+		Phase: phase,
 	}:
 	default:
 		log.Error("Failed to send stats to reporters")
 	}
 }
 
-func reportStats(remoteAddr string, BytesIn uint64, BytesOut uint64) {
+func reportTraffic(remoteAddr string, BytesIn uint64, BytesOut uint64) {
 	select {
 	case chStat <- &Traffic{
-		RemoteAddr: remoteAddr,
-		BytesIn:    BytesIn,
-		BytesOut:   BytesOut,
+		ID:       remoteAddr,
+		BytesIn:  BytesIn,
+		BytesOut: BytesOut,
 	}:
 	default:
 		log.Error("Failed to send stats to reporters")

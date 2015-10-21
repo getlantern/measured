@@ -38,11 +38,11 @@ func TestReportError(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if assert.Equal(t, 2, len(nr.s)) {
 		e := nr.s[0].(*Error)
-		assert.Equal(t, "localhost:9999", e.RemoteAddr, "should report correct RemoteAddr")
+		assert.Equal(t, "localhost:9999", e.ID, "should report correct RemoteAddr")
 		assert.Equal(t, "connection refused", e.Error, "should report connection reset")
 
 		e = nr.s[1].(*Error)
-		assert.Equal(t, "localhost:9998", e.RemoteAddr, "should report correct RemoteAddr")
+		assert.Equal(t, "localhost:9998", e.ID, "should report correct RemoteAddr")
 		assert.Equal(t, "connection refused", e.Error, "should report connection reset")
 	}
 }
@@ -91,17 +91,17 @@ func TestReportStats(t *testing.T) {
 	// verify both client and server stats
 	if assert.Equal(t, 3, len(nr.s)) {
 		e := nr.s[0].(*Traffic)
-		assert.Equal(t, RemoteAddr, e.RemoteAddr, "should report server stats with Remote addr")
+		assert.Equal(t, RemoteAddr, e.ID, "should report server stats with Remote addr")
 		assert.Equal(t, bytesIn, e.BytesIn, "should report server stats with bytes in")
 		assert.Equal(t, bytesOut, e.BytesOut, "should report server stats with bytes out")
 
 		e = nr.s[1].(*Traffic)
-		assert.Equal(t, l.Addr().String(), e.RemoteAddr, "should report server as Remote addr")
+		assert.Equal(t, l.Addr().String(), e.ID, "should report server as Remote addr")
 		assert.Equal(t, bytesIn, e.BytesOut, "should report same byte count as server")
 		assert.Equal(t, bytesOut, e.BytesIn, "should report same byte count as server")
 
 		e = nr.s[2].(*Traffic)
-		assert.Equal(t, l.Addr().String(), e.RemoteAddr, "should report server as Remote addr")
+		assert.Equal(t, l.Addr().String(), e.ID, "should report server as Remote addr")
 		assert.Equal(t, uint64(0), e.BytesOut, "should only report increased byte count")
 		assert.Equal(t, uint64(0), e.BytesIn, "should only report increased byte count")
 	}

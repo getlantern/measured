@@ -40,8 +40,8 @@ func NewInfluxDBReporter(influxURL, username, password, dbName string, httpClien
 func (ir *influxDBReporter) ReportError(s *measured.Error) error {
 	return ir.submit("errors",
 		map[string]string{
-			"remote-addr": s.RemoteAddr,
-			"error":       s.Error,
+			"id":    s.ID,
+			"error": s.Error,
 		},
 		map[string]interface{}{
 			"count": 1,
@@ -52,7 +52,7 @@ func (ir *influxDBReporter) ReportError(s *measured.Error) error {
 func (ir *influxDBReporter) ReportLatency(s *measured.Latency) error {
 	return ir.submit("latency",
 		map[string]string{
-			"remote-addr": s.RemoteAddr,
+			"id": s.ID,
 		},
 		map[string]interface{}{
 			"latency": s.Latency,
@@ -62,7 +62,7 @@ func (ir *influxDBReporter) ReportLatency(s *measured.Latency) error {
 func (ir *influxDBReporter) ReportTraffic(s *measured.Traffic) error {
 	return ir.submit("traffic",
 		map[string]string{
-			"remote-addr": s.RemoteAddr,
+			"id": s.ID,
 		},
 		map[string]interface{}{
 			"bytesIn":  s.BytesIn,
