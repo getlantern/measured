@@ -112,8 +112,9 @@ func Dialer(d DialFunc, interval time.Duration) DialFunc {
 		c, err := d(net, addr)
 		if err != nil {
 			reportError(addr, err, "dial")
+			return nil, err
 		}
-		return newConn(c, interval), err
+		return newConn(c, interval), nil
 	}
 }
 
@@ -172,6 +173,8 @@ func run() {
 // Conn wraps any net.Conn to add statistics
 type Conn struct {
 	net.Conn
+	// arbitrary string to identify current connection, defaults to remote address
+	ID string
 	// total bytes read from this connection
 	BytesIn uint64
 	// total bytes wrote to this connection
@@ -181,7 +184,11 @@ type Conn struct {
 }
 
 func newConn(c net.Conn, interval time.Duration) net.Conn {
-	mc := &Conn{Conn: c, chStop: make(chan interface{})}
+	ra := c.RemoteAddr()
+	if ra == nil {
+		panic("remote address is nil")
+	}
+	mc := &Conn{Conn: c, ID: ra.String(), chStop: make(chan interface{})}
 	ticker := time.NewTicker(interval)
 	go func() {
 		for {
@@ -201,7 +208,6 @@ func newConn(c net.Conn, interval time.Duration) net.Conn {
 func (mc *Conn) Read(b []byte) (n int, err error) {
 	n, err = mc.Conn.Read(b)
 	if err != nil {
-
 		mc.reportError(err, "read")
 	}
 	atomic.AddUint64(&mc.BytesIn, uint64(n))
@@ -230,21 +236,11 @@ func (mc *Conn) Close() (err error) {
 }
 
 func (mc *Conn) reportError(err error, phase string) {
-	ra := mc.Conn.RemoteAddr()
-	if ra == nil {
-		log.Error("Remote address is nil, not report error")
-		return
-	}
-	reportError(ra.String(), err, phase)
+	reportError(mc.ID, err, phase)
 }
 
 func (mc *Conn) reportTraffic() {
-	ra := mc.Conn.RemoteAddr()
-	if ra == nil {
-		log.Error("Remote address is nil, not report stats")
-		return
-	}
-	reportTraffic(ra.String(),
+	reportTraffic(mc.ID,
 		atomic.SwapUint64(&mc.BytesIn, 0),
 		atomic.SwapUint64(&mc.BytesOut, 0))
 }
