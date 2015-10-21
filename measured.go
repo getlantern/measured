@@ -4,6 +4,8 @@ client connection), throughput and errors of the connection made/accepted.
 
 Throughput is represented as total bytes sent/received between each interval.
 
+ID is the remote address by default.
+
 A list of reporters can be plugged in to send the results to different target.
 */
 package measured
