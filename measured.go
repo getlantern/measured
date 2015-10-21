@@ -92,7 +92,7 @@ func Dialer(d DialFunc, interval time.Duration) DialFunc {
 		if err != nil {
 			reportError(addr, err, "dial")
 		}
-		return newMeasuredConn(c, interval), err
+		return newConn(c, interval), err
 	}
 }
 
@@ -113,7 +113,7 @@ func (l *measuredListener) Accept() (c net.Conn, err error) {
 	if err != nil {
 		return
 	}
-	return newMeasuredConn(c, l.interval), err
+	return newConn(c, l.interval), err
 }
 
 func run() {
@@ -139,8 +139,8 @@ func run() {
 	}
 }
 
-// MeasuredConn wraps any net.Conn to add statistics
-type MeasuredConn struct {
+// Conn wraps any net.Conn to add statistics
+type Conn struct {
 	net.Conn
 	// total bytes read from this connection
 	BytesIn uint64
@@ -152,8 +152,8 @@ type MeasuredConn struct {
 	chStop    chan interface{}
 }
 
-func newMeasuredConn(c net.Conn, interval time.Duration) net.Conn {
-	mc := &MeasuredConn{Conn: c, ExtraTags: make(map[string]string), chStop: make(chan interface{})}
+func newConn(c net.Conn, interval time.Duration) net.Conn {
+	mc := &Conn{Conn: c, ExtraTags: make(map[string]string), chStop: make(chan interface{})}
 	ticker := time.NewTicker(interval)
 	go func() {
 		for {
@@ -170,7 +170,7 @@ func newMeasuredConn(c net.Conn, interval time.Duration) net.Conn {
 }
 
 // Read() implements the function from net.Conn
-func (mc *MeasuredConn) Read(b []byte) (n int, err error) {
+func (mc *Conn) Read(b []byte) (n int, err error) {
 	n, err = mc.Conn.Read(b)
 	if err != nil {
 
@@ -181,7 +181,7 @@ func (mc *MeasuredConn) Read(b []byte) (n int, err error) {
 }
 
 // Write() implements the function from net.Conn
-func (mc *MeasuredConn) Write(b []byte) (n int, err error) {
+func (mc *Conn) Write(b []byte) (n int, err error) {
 	n, err = mc.Conn.Write(b)
 	if err != nil {
 		mc.reportError(err, "write")
@@ -191,7 +191,7 @@ func (mc *MeasuredConn) Write(b []byte) (n int, err error) {
 }
 
 // Close() implements the function from net.Conn
-func (mc *MeasuredConn) Close() (err error) {
+func (mc *Conn) Close() (err error) {
 	err = mc.Conn.Close()
 	if err != nil {
 		mc.reportError(err, "close")
@@ -201,7 +201,7 @@ func (mc *MeasuredConn) Close() (err error) {
 	return
 }
 
-func (mc *MeasuredConn) reportError(err error, phase string) {
+func (mc *Conn) reportError(err error, phase string) {
 	ra := mc.Conn.RemoteAddr()
 	if ra == nil {
 		log.Error("Remote address is nil, not report error")
@@ -210,7 +210,7 @@ func (mc *MeasuredConn) reportError(err error, phase string) {
 	reportError(ra.String(), err, phase)
 }
 
-func (mc *MeasuredConn) reportStats() {
+func (mc *Conn) reportStats() {
 	ra := mc.Conn.RemoteAddr()
 	if ra == nil {
 		log.Error("Remote address is nil, not report stats")

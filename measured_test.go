@@ -67,7 +67,7 @@ func TestReportStats(t *testing.T) {
 			ConnState: func(c net.Conn, s http.ConnState) {
 				if s == http.StateIdle {
 					remoteAddr = c.RemoteAddr().String()
-					mc := c.(*MeasuredConn)
+					mc := c.(*Conn)
 					bytesIn = mc.BytesIn
 					bytesOut = mc.BytesOut
 					mc.Close()
