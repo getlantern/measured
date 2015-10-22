@@ -11,21 +11,25 @@ import (
 )
 
 type mockReporter struct {
-	s []Stat
+	error   map[Error]int
+	latency []*LatencyTracker
+	traffic []*TrafficTracker
 }
 
-func (nr *mockReporter) ReportError(e *Error) error {
-	nr.s = append(nr.s, e)
+func (nr *mockReporter) ReportError(e map[*Error]int) error {
+	for k, v := range e {
+		nr.error[*k] = v
+	}
 	return nil
 }
 
-func (nr *mockReporter) ReportLatency(e *Latency) error {
-	nr.s = append(nr.s, e)
+func (nr *mockReporter) ReportLatency(l []*LatencyTracker) error {
+	nr.latency = append(nr.latency, l...)
 	return nil
 }
 
-func (nr *mockReporter) ReportTraffic(e *Traffic) error {
-	nr.s = append(nr.s, e)
+func (nr *mockReporter) ReportTraffic(t []*TrafficTracker) error {
+	nr.traffic = append(nr.traffic, t...)
 	return nil
 }
 
@@ -35,15 +39,11 @@ func TestReportError(t *testing.T) {
 	d := Dialer(net.Dial, 10*time.Second)
 	_, _ = d("tcp", "localhost:9999")
 	_, _ = d("tcp", "localhost:9998")
+	runtime.Gosched()
 	time.Sleep(100 * time.Millisecond)
-	if assert.Equal(t, 2, len(nr.s)) {
-		e := nr.s[0].(*Error)
-		assert.Equal(t, "localhost:9999", e.ID, "should report correct RemoteAddr")
-		assert.Equal(t, "connection refused", e.Error, "should report connection reset")
-
-		e = nr.s[1].(*Error)
-		assert.Equal(t, "localhost:9998", e.ID, "should report correct RemoteAddr")
-		assert.Equal(t, "connection refused", e.Error, "should report connection reset")
+	if assert.Equal(t, 2, len(nr.error)) {
+		assert.Equal(t, 1, nr.error[Error{"localhost:9999", "connection refused", "dial"}])
+		assert.Equal(t, 1, nr.error[Error{"localhost:9998", "connection refused", "dial"}])
 	}
 }
 
@@ -66,6 +66,7 @@ func TestReportStats(t *testing.T) {
 					mc := c.(*Conn)
 					bytesIn = mc.BytesIn
 					bytesOut = mc.BytesOut
+					time.Sleep(100 * time.Millisecond)
 					mc.Close()
 				}
 			},
@@ -77,7 +78,7 @@ func TestReportStats(t *testing.T) {
 	c := http.Client{
 		Transport: &http.Transport{
 			// carefully chosen interval to report another once before Close()
-			Dial: Dialer(net.Dial, 60*time.Millisecond),
+			Dial: Dialer(net.Dial, 160*time.Millisecond),
 		},
 	}
 	req, _ := http.NewRequest("GET", "http://"+l.Addr().String(), nil)
@@ -87,31 +88,33 @@ func TestReportStats(t *testing.T) {
 	assert.Equal(t, uint64(97), bytesIn, "")
 	assert.Equal(t, uint64(143), bytesOut, "")
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	// verify both client and server stats
-	if assert.Equal(t, 3, len(nr.s)) {
-		e := nr.s[0].(*Traffic)
+	if assert.Equal(t, 3, len(nr.traffic)) {
+		e := nr.traffic[1]
 		assert.Equal(t, RemoteAddr, e.ID, "should report server stats with Remote addr")
-		assert.Equal(t, bytesIn, e.BytesIn, "should report server stats with bytes in")
-		assert.Equal(t, bytesOut, e.BytesOut, "should report server stats with bytes out")
+		assert.Equal(t, bytesIn, e.MinIn, "should report server stats with bytes in")
+		assert.Equal(t, bytesOut, e.MinOut, "should report server stats with bytes out")
 
-		e = nr.s[1].(*Traffic)
+		e = nr.traffic[0]
 		assert.Equal(t, l.Addr().String(), e.ID, "should report server as Remote addr")
-		assert.Equal(t, bytesIn, e.BytesOut, "should report same byte count as server")
-		assert.Equal(t, bytesOut, e.BytesIn, "should report same byte count as server")
+		assert.Equal(t, bytesIn, e.MinOut, "should report same byte count as server")
+		assert.Equal(t, bytesOut, e.MinIn, "should report same byte count as server")
 
-		e = nr.s[2].(*Traffic)
+		e = nr.traffic[2]
 		assert.Equal(t, l.Addr().String(), e.ID, "should report server as Remote addr")
-		assert.Equal(t, uint64(0), e.BytesOut, "should only report increased byte count")
-		assert.Equal(t, uint64(0), e.BytesIn, "should only report increased byte count")
+		assert.Equal(t, uint64(0), e.MinOut, "should only report increased byte count")
+		assert.Equal(t, uint64(0), e.MinIn, "should only report increased byte count")
 	}
 }
 
 func startWithMockReporter() *mockReporter {
-	nr := mockReporter{}
+	nr := mockReporter{
+		error: make(map[Error]int),
+	}
 	Reset()
 	AddReporter(&nr)
-	Start()
+	Start(50 * time.Millisecond)
 	// To make sure it really started
 	runtime.Gosched()
 	return &nr

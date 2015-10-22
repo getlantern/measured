@@ -12,20 +12,14 @@ package measured
 
 import (
 	"net"
+	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/golog"
 )
-
-type Tags map[string]string
-
-func (t *Tags) Compare(rhs *Tags) int {
-	return 0
-}
-
-type Fields map[string]interface{}
 
 // Stats encapsulates the statistics to report
 type Stat interface {
@@ -42,11 +36,30 @@ type Latency struct {
 	ID      string
 	Latency time.Duration
 }
-
 type Traffic struct {
 	ID       string
 	BytesIn  uint64
 	BytesOut uint64
+}
+
+type LatencyTracker struct {
+	ID        string
+	Min       time.Duration
+	Max       time.Duration
+	Percent95 time.Duration
+	Last      time.Duration
+}
+
+type TrafficTracker struct {
+	ID           string
+	MinIn        uint64
+	MaxIn        uint64
+	Percent95In  uint64
+	LastIn       uint64
+	MinOut       uint64
+	MaxOut       uint64
+	Percent95Out uint64
+	LastOut      uint64
 }
 
 const (
@@ -61,17 +74,28 @@ func (e Traffic) Type() string { return typeTraffic }
 
 // Reporter encapsulates different ways to report statistics
 type Reporter interface {
-	ReportError(*Error) error
-	ReportLatency(*Latency) error
-	ReportTraffic(*Traffic) error
+	ReportError(map[*Error]int) error
+	ReportLatency([]*LatencyTracker) error
+	ReportTraffic([]*TrafficTracker) error
+}
+
+type tickingReporter struct {
+	t *time.Ticker
+	r Reporter
 }
 
 var (
-	reporters atomic.Value
+	reporters []Reporter
 	log       = golog.LoggerFor("measured")
 	// to avoid blocking when busily reporting stats
-	chStat = make(chan Stat, 10)
-	chStop = make(chan interface{})
+	chStat       = make(chan Stat, 10)
+	chStopReport = make(chan interface{})
+	chReport     = make(chan Reporter)
+	chStop       = make(chan interface{})
+
+	errorList   []*Error
+	latencyList []*Latency
+	trafficList []*Traffic
 )
 
 func init() {
@@ -83,17 +107,20 @@ type DialFunc func(net, addr string) (net.Conn, error)
 
 // Reset resets the measured package
 func Reset() {
-	reporters.Store([]Reporter{})
+	reporters = []Reporter{}
 }
 
-// AddReporter add a new way to report statistics
+// AddReporter adds a new way to report statistics
 func AddReporter(r Reporter) {
-	reporters.Store(append(reporters.Load().([]Reporter), r))
+	reporters = append(reporters, r)
 }
 
 // Start runs the measured loop
-func Start() {
-	go run()
+// Reporting interval should be same for all reporters, as cached data should
+// be cleared after each round.
+
+func Start(reportInterval time.Duration) {
+	go run(reportInterval)
 }
 
 // Stop stops the measured loop
@@ -111,7 +138,7 @@ func Dialer(d DialFunc, interval time.Duration) DialFunc {
 	return func(net, addr string) (net.Conn, error) {
 		c, err := d(net, addr)
 		if err != nil {
-			reportError(addr, err, "dial")
+			submitError(addr, err, "dial")
 			return nil, err
 		}
 		return newConn(c, interval), nil
@@ -138,30 +165,37 @@ func (l *measuredListener) Accept() (c net.Conn, err error) {
 	return newConn(c, l.interval), err
 }
 
-type reportFunc func(r Reporter)
-
-func eachReporter(f reportFunc) {
-}
-func run() {
+func run(reportInterval time.Duration) {
 	log.Debug("Measured loop started")
+	t := time.NewTicker(reportInterval)
 	for {
 		select {
 		case s := <-chStat:
-			var f func(r Reporter) error
 			switch s.Type() {
 			case typeError:
-				f = func(r Reporter) error { return r.ReportError(s.(*Error)) }
+				errorList = append(errorList, s.(*Error))
 			case typeLatency:
-				f = func(r Reporter) error { return r.ReportLatency(s.(*Latency)) }
+				latencyList = append(latencyList, s.(*Latency))
 			case typeTraffic:
-				f = func(r Reporter) error { return r.ReportTraffic(s.(*Traffic)) }
+				trafficList = append(trafficList, s.(*Traffic))
 			}
-			for _, r := range reporters.Load().([]Reporter) {
-				if err := f(r); err != nil {
-					log.Errorf("Failed to report error to influxdb: %s", err)
-				} else {
-					log.Tracef("Submitted error to influxdb: %v", s)
-				}
+		case <-t.C:
+			if len(errorList) > 0 {
+				newErrorList := errorList
+				errorList = []*Error{}
+				go reportError(newErrorList)
+			}
+
+			if len(latencyList) > 0 {
+				newLatencyList := latencyList
+				latencyList = []*Latency{}
+				go reportLatency(newLatencyList)
+			}
+
+			if len(trafficList) > 0 {
+				newTrafficList := trafficList
+				trafficList = []*Traffic{}
+				go reportTraffic(newTrafficList)
 			}
 		case <-chStop:
 			log.Debug("Measured loop stopped")
@@ -170,23 +204,109 @@ func run() {
 	}
 }
 
+func reportError(el []*Error) {
+	log.Tracef("Reporting %d error entry", len(el))
+	errors := make(map[*Error]int)
+	for _, e := range el {
+		errors[e] = errors[e] + 1
+	}
+	for _, r := range reporters {
+		if err := r.ReportError(errors); err != nil {
+			log.Errorf("Failed to report error to %s: %s", reflect.TypeOf(r), err)
+		}
+	}
+}
+
+type latencySorter []*Latency
+
+func (a latencySorter) Len() int           { return len(a) }
+func (a latencySorter) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a latencySorter) Less(i, j int) bool { return a[i].Latency < a[j].Latency }
+
+func reportLatency(ll []*Latency) {
+	log.Tracef("Reporting %d latency entry", len(ll))
+	lm := make(map[string][]*Latency)
+	for _, l := range ll {
+		lm[l.ID] = append(lm[l.ID], l)
+	}
+	trackers := []*LatencyTracker{}
+	for k, l := range lm {
+		t := LatencyTracker{ID: k}
+		t.Last = l[len(l)-1].Latency
+		sort.Sort(latencySorter(l))
+		t.Min = l[0].Latency
+		t.Max = l[len(l)-1].Latency
+		p95 := int(float64(len(l)) * 0.95)
+		t.Percent95 = l[p95].Latency
+		trackers = append(trackers, &t)
+	}
+	for _, r := range reporters {
+		if err := r.ReportLatency(trackers); err != nil {
+			log.Errorf("Failed to report latency data to %s: %s", reflect.TypeOf(r), err)
+		}
+	}
+}
+
+type trafficByBytesIn []*Traffic
+
+func (a trafficByBytesIn) Len() int           { return len(a) }
+func (a trafficByBytesIn) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a trafficByBytesIn) Less(i, j int) bool { return a[i].BytesIn < a[j].BytesIn }
+
+type trafficByBytesOut []*Traffic
+
+func (a trafficByBytesOut) Len() int           { return len(a) }
+func (a trafficByBytesOut) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a trafficByBytesOut) Less(i, j int) bool { return a[i].BytesOut < a[j].BytesOut }
+
+func reportTraffic(tl []*Traffic) {
+	log.Tracef("Reporting %d traffic entry", len(tl))
+	tm := make(map[string][]*Traffic)
+	for _, t := range tl {
+		tm[t.ID] = append(tm[t.ID], t)
+	}
+	trackers := []*TrafficTracker{}
+	for k, l := range tm {
+		t := TrafficTracker{ID: k}
+		t.LastIn = l[len(l)-1].BytesIn
+		t.LastOut = l[len(l)-1].BytesOut
+		p95 := int(float64(len(l)) * 0.95)
+
+		sort.Sort(trafficByBytesIn(l))
+		t.MinIn = l[0].BytesIn
+		t.MaxIn = l[len(l)-1].BytesIn
+		t.Percent95In = l[p95].BytesIn
+
+		sort.Sort(trafficByBytesOut(l))
+		t.MinOut = l[0].BytesOut
+		t.MaxOut = l[len(l)-1].BytesOut
+		t.Percent95Out = l[p95].BytesOut
+		trackers = append(trackers, &t)
+	}
+	for _, r := range reporters {
+		if err := r.ReportTraffic(trackers); err != nil {
+			log.Errorf("Failed to report traffic data to %s: %s", reflect.TypeOf(r), err)
+		}
+	}
+}
+
 // Conn wraps any net.Conn to add statistics
 type Conn struct {
 	net.Conn
-	// arbitrary string to identify current connection, defaults to remote address
+	// arbitrary string to identify this connection, defaults to remote address
 	ID string
 	// total bytes read from this connection
 	BytesIn uint64
 	// total bytes wrote to this connection
 	BytesOut uint64
-	// extra tags related to this connection, will submit to reporters eventually
+	// a channel to stop measure and report statistics
 	chStop chan interface{}
 }
 
 func newConn(c net.Conn, interval time.Duration) net.Conn {
 	ra := c.RemoteAddr()
 	if ra == nil {
-		panic("remote address is nil")
+		panic("nil remote address is not allowed")
 	}
 	mc := &Conn{Conn: c, ID: ra.String(), chStop: make(chan interface{})}
 	ticker := time.NewTicker(interval)
@@ -194,7 +314,7 @@ func newConn(c net.Conn, interval time.Duration) net.Conn {
 		for {
 			select {
 			case _ = <-ticker.C:
-				mc.reportTraffic()
+				mc.submitTraffic()
 			case _ = <-chStop:
 				ticker.Stop()
 				return
@@ -208,7 +328,7 @@ func newConn(c net.Conn, interval time.Duration) net.Conn {
 func (mc *Conn) Read(b []byte) (n int, err error) {
 	n, err = mc.Conn.Read(b)
 	if err != nil {
-		mc.reportError(err, "read")
+		mc.submitError(err, "read")
 	}
 	atomic.AddUint64(&mc.BytesIn, uint64(n))
 	return
@@ -218,7 +338,7 @@ func (mc *Conn) Read(b []byte) (n int, err error) {
 func (mc *Conn) Write(b []byte) (n int, err error) {
 	n, err = mc.Conn.Write(b)
 	if err != nil {
-		mc.reportError(err, "write")
+		mc.submitError(err, "write")
 	}
 	atomic.AddUint64(&mc.BytesOut, uint64(n))
 	return
@@ -228,24 +348,24 @@ func (mc *Conn) Write(b []byte) (n int, err error) {
 func (mc *Conn) Close() (err error) {
 	err = mc.Conn.Close()
 	if err != nil {
-		mc.reportError(err, "close")
+		mc.submitError(err, "close")
 	}
-	mc.reportTraffic()
+	mc.submitTraffic()
 	mc.chStop <- nil
 	return
 }
 
-func (mc *Conn) reportError(err error, phase string) {
-	reportError(mc.ID, err, phase)
+func (mc *Conn) submitError(err error, phase string) {
+	submitError(mc.ID, err, phase)
 }
 
-func (mc *Conn) reportTraffic() {
-	reportTraffic(mc.ID,
+func (mc *Conn) submitTraffic() {
+	submitTraffic(mc.ID,
 		atomic.SwapUint64(&mc.BytesIn, 0),
 		atomic.SwapUint64(&mc.BytesOut, 0))
 }
 
-func reportError(remoteAddr string, err error, phase string) {
+func submitError(remoteAddr string, err error, phase string) {
 	splitted := strings.Split(err.Error(), ":")
 	lastIndex := len(splitted) - 1
 	if lastIndex < 0 {
@@ -259,11 +379,11 @@ func reportError(remoteAddr string, err error, phase string) {
 		Phase: phase,
 	}:
 	default:
-		log.Error("Failed to send stats to reporters")
+		log.Error("Failed to submit error, channel busy")
 	}
 }
 
-func reportTraffic(remoteAddr string, BytesIn uint64, BytesOut uint64) {
+func submitTraffic(remoteAddr string, BytesIn uint64, BytesOut uint64) {
 	select {
 	case chStat <- &Traffic{
 		ID:       remoteAddr,
@@ -271,6 +391,6 @@ func reportTraffic(remoteAddr string, BytesIn uint64, BytesOut uint64) {
 		BytesOut: BytesOut,
 	}:
 	default:
-		log.Error("Failed to send stats to reporters")
+		log.Error("Failed to submit traffic, channel busy")
 	}
 }
