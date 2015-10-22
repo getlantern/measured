@@ -56,10 +56,12 @@ type TrafficTracker struct {
 	MaxIn        uint64
 	Percent95In  uint64
 	LastIn       uint64
+	TotalIn      uint64
 	MinOut       uint64
 	MaxOut       uint64
 	Percent95Out uint64
 	LastOut      uint64
+	TotalOut     uint64
 }
 
 const (
@@ -270,6 +272,10 @@ func reportTraffic(tl []*Traffic) {
 		t := TrafficTracker{ID: k}
 		t.LastIn = l[len(l)-1].BytesIn
 		t.LastOut = l[len(l)-1].BytesOut
+		for _, d := range l {
+			t.TotalIn = t.TotalIn + d.BytesIn
+			t.TotalOut = t.TotalOut + d.BytesOut
+		}
 		p95 := int(float64(len(l)) * 0.95)
 
 		sort.Sort(trafficByBytesIn(l))

@@ -93,6 +93,8 @@ func TestReportStats(t *testing.T) {
 	if assert.Equal(t, 3, len(nr.traffic)) {
 		e := nr.traffic[1]
 		assert.Equal(t, RemoteAddr, e.ID, "should report server stats with Remote addr")
+		assert.Equal(t, bytesIn, e.TotalIn, "should report server stats with bytes in")
+		assert.Equal(t, bytesOut, e.TotalOut, "should report server stats with bytes out")
 		assert.Equal(t, bytesIn, e.MinIn, "should report server stats with bytes in")
 		assert.Equal(t, bytesOut, e.MinOut, "should report server stats with bytes out")
 

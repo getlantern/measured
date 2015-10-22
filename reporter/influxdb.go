@@ -88,10 +88,12 @@ func (ir *influxDBReporter) ReportTraffic(tt []*measured.TrafficTracker) error {
 				"max_in":        v.MaxIn,
 				"percent95_in":  v.Percent95In,
 				"last_in":       v.LastIn,
+				"total_in":      v.TotalIn,
 				"min_out":       v.MinOut,
 				"max_out":       v.MaxOut,
 				"percent95_out": v.Percent95Out,
 				"last_out":      v.LastOut,
+				"total_out":     v.TotalOut,
 			},
 		})
 	}
