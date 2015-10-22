@@ -32,10 +32,11 @@ func TestWriteLineProtocol(t *testing.T) {
 	}))
 	defer ts.Close()
 	ir := NewInfluxDBReporter(ts.URL, "test-user", "test-password", "testdb", nil)
-	e := ir.ReportError(&measured.Error{
+	e := ir.ReportError(map[*measured.Error]int{&measured.Error{
 		ID:    "fl-nl-xxx",
 		Error: "test error",
-	})
+		Phase: "dial",
+	}: 1})
 	assert.NoError(t, e, "should send to influxdb without error")
 	req := <-chReq
 	assert.Equal(t, 3, len(req))
@@ -53,31 +54,32 @@ func TestCheckContent(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	ir := NewInfluxDBReporter(ts.URL, "test-user", "test-password", "testdb", nil).(*influxDBReporter)
-	e := ir.submit("bytes", map[string]string{}, map[string]interface{}{})
+	e := ir.submit([]*submitData{&submitData{"bytes", map[string]string{}, map[string]interface{}{}}})
 	assert.Error(t, e, "should error if no tag or field specified")
-	e = ir.submit("bytes", map[string]string{}, map[string]interface{}{"value": 3})
+	e = ir.submit([]*submitData{&submitData{"bytes", map[string]string{}, map[string]interface{}{"value": 3}}})
 	assert.Error(t, e, "should error if no tag specified")
-	e = ir.submit("bytes", map[string]string{"server": "fl-nl-xxx"}, map[string]interface{}{})
+	e = ir.submit([]*submitData{&submitData{"bytes", map[string]string{"server": "fl-nl-xxx"}, map[string]interface{}{}}})
 	assert.Error(t, e, "should error if no field specified")
-	e = ir.submit("bytes",
+	e = ir.submit([]*submitData{&submitData{"bytes",
 		map[string]string{"server": "fl-nl-xxx"},
-		map[string]interface{}{"value": 3})
+		map[string]interface{}{"value": 3}}})
 	assert.NoError(t, e, "should have no error for valid stat")
-	e = ir.submit("bytes",
+	e = ir.submit([]*submitData{&submitData{"bytes",
 		map[string]string{"server": "fl-nl-xxx"},
-		map[string]interface{}{"value": ""})
+		map[string]interface{}{"value": ""}}})
 	assert.Error(t, e, "should have error if field is empty")
-	e = ir.submit("bytes",
+	e = ir.submit([]*submitData{&submitData{"bytes",
 		map[string]string{"server": ""},
-		map[string]interface{}{"value": "3"})
+		map[string]interface{}{"value": "3"}}})
 	assert.Error(t, e, "should have error if tag is empty")
 }
 
 func TestRealProxyServer(t *testing.T) {
 	ir := NewInfluxDBReporter("https://influx.getiantem.org/", "test", "test", "lantern", nil)
-	e := ir.ReportError(&measured.Error{
+	e := ir.ReportError(map[*measured.Error]int{&measured.Error{
 		ID:    "fl-nl-xxx",
 		Error: "test error",
-	})
+		Phase: "dial",
+	}: 1})
 	assert.NoError(t, e, "should send to influxdb without error")
 }
