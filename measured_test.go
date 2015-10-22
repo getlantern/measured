@@ -114,9 +114,7 @@ func startWithMockReporter() *mockReporter {
 	nr := mockReporter{
 		error: make(map[Error]int),
 	}
-	Reset()
-	AddReporter(&nr)
-	Start(50 * time.Millisecond)
+	Start(50*time.Millisecond, &nr)
 	// To make sure it really started
 	runtime.Gosched()
 	return &nr

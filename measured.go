@@ -100,29 +100,15 @@ var (
 	trafficList []*Traffic
 )
 
-func init() {
-	Reset()
-}
-
 // DialFunc is the type of function measured can wrap
 type DialFunc func(net, addr string) (net.Conn, error)
-
-// Reset resets the measured package
-func Reset() {
-	reporters = []Reporter{}
-}
-
-// AddReporter adds a new way to report statistics
-func AddReporter(r Reporter) {
-	reporters = append(reporters, r)
-}
 
 // Start runs the measured loop
 // Reporting interval should be same for all reporters, as cached data should
 // be cleared after each round.
 
-func Start(reportInterval time.Duration) {
-	go run(reportInterval)
+func Start(reportInterval time.Duration, reporters ...Reporter) {
+	go run(reportInterval, reporters...)
 }
 
 // Stop stops the measured loop
@@ -167,7 +153,7 @@ func (l *measuredListener) Accept() (c net.Conn, err error) {
 	return newConn(c, l.interval), err
 }
 
-func run(reportInterval time.Duration) {
+func run(reportInterval time.Duration, reporters ...Reporter) {
 	log.Debug("Measured loop started")
 	t := time.NewTicker(reportInterval)
 	for {
@@ -190,15 +176,15 @@ func run(reportInterval time.Duration) {
 			trafficList = []*Traffic{}
 			go func() {
 				if len(newErrorList) > 0 {
-					reportError(newErrorList)
+					reportError(newErrorList, reporters)
 				}
 
 				if len(newLatencyList) > 0 {
-					reportLatency(newLatencyList)
+					reportLatency(newLatencyList, reporters)
 				}
 
 				if len(newTrafficList) > 0 {
-					reportTraffic(newTrafficList)
+					reportTraffic(newTrafficList, reporters)
 				}
 			}()
 		case <-chStop:
@@ -208,7 +194,7 @@ func run(reportInterval time.Duration) {
 	}
 }
 
-func reportError(el []*Error) {
+func reportError(el []*Error, reporters []Reporter) {
 	log.Tracef("Reporting %d error entry", len(el))
 	errors := make(map[*Error]int)
 	for _, e := range el {
@@ -227,7 +213,7 @@ func (a latencySorter) Len() int           { return len(a) }
 func (a latencySorter) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a latencySorter) Less(i, j int) bool { return a[i].Latency < a[j].Latency }
 
-func reportLatency(ll []*Latency) {
+func reportLatency(ll []*Latency, reporters []Reporter) {
 	log.Tracef("Reporting %d latency entry", len(ll))
 	lm := make(map[string][]*Latency)
 	for _, l := range ll {
@@ -263,7 +249,7 @@ func (a trafficByBytesOut) Len() int           { return len(a) }
 func (a trafficByBytesOut) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a trafficByBytesOut) Less(i, j int) bool { return a[i].BytesOut < a[j].BytesOut }
 
-func reportTraffic(tl []*Traffic) {
+func reportTraffic(tl []*Traffic, reporters []Reporter) {
 	log.Tracef("Reporting %d traffic entry", len(tl))
 	tm := make(map[string][]*Traffic)
 	for _, t := range tl {
