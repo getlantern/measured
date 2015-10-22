@@ -182,23 +182,25 @@ func run(reportInterval time.Duration) {
 				trafficList = append(trafficList, s.(*Traffic))
 			}
 		case <-t.C:
-			if len(errorList) > 0 {
-				newErrorList := errorList
-				errorList = []*Error{}
-				go reportError(newErrorList)
-			}
+			newErrorList := errorList
+			errorList = []*Error{}
+			newLatencyList := latencyList
+			latencyList = []*Latency{}
+			newTrafficList := trafficList
+			trafficList = []*Traffic{}
+			go func() {
+				if len(newErrorList) > 0 {
+					reportError(newErrorList)
+				}
 
-			if len(latencyList) > 0 {
-				newLatencyList := latencyList
-				latencyList = []*Latency{}
-				go reportLatency(newLatencyList)
-			}
+				if len(newLatencyList) > 0 {
+					reportLatency(newLatencyList)
+				}
 
-			if len(trafficList) > 0 {
-				newTrafficList := trafficList
-				trafficList = []*Traffic{}
-				go reportTraffic(newTrafficList)
-			}
+				if len(newTrafficList) > 0 {
+					reportTraffic(newTrafficList)
+				}
+			}()
 		case <-chStop:
 			log.Debug("Measured loop stopped")
 			return
