@@ -378,24 +378,28 @@ func submitError(remoteAddr string, err error, phase string) {
 		lastIndex = 0
 	}
 	e := strings.Trim(splitted[lastIndex], " ")
-	select {
-	case chStat <- &Error{
+	er := &Error{
 		ID:    remoteAddr,
 		Error: e,
 		Phase: phase,
-	}:
+	}
+	log.Tracef("Submiting error %+v", er)
+	select {
+	case chStat <- er:
 	default:
 		log.Error("Failed to submit error, channel busy")
 	}
 }
 
 func submitTraffic(remoteAddr string, BytesIn uint64, BytesOut uint64) {
-	select {
-	case chStat <- &Traffic{
+	t := &Traffic{
 		ID:       remoteAddr,
 		BytesIn:  BytesIn,
 		BytesOut: BytesOut,
-	}:
+	}
+	log.Tracef("Submiting traffic %+v", t)
+	select {
+	case chStat <- t:
 	default:
 		log.Error("Failed to submit traffic, channel busy")
 	}
