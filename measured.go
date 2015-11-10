@@ -134,7 +134,7 @@ func Dialer(d DialFunc, interval time.Duration) DialFunc {
 }
 
 // Dialer wraps a dial function to measure various statistics
-func Listener(l net.Listener, interval time.Duration) net.Listener {
+func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
 	return &MeasuredListener{l, interval}
 }
 
