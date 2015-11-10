@@ -309,7 +309,7 @@ func newConn(c net.Conn, interval time.Duration) net.Conn {
 			select {
 			case _ = <-ticker.C:
 				mc.submitTraffic()
-			case _ = <-chStop:
+			case _ = <-mc.chStop:
 				ticker.Stop()
 				return
 			}
