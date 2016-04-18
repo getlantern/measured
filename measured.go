@@ -94,11 +94,9 @@ type tickingReporter struct {
 
 // Measured is the controller to report statistics
 type Measured struct {
-	reporters    []Reporter
-	chStat       chan Stat
-	chStopReport chan interface{}
-	chReport     chan Reporter
-	chStop       chan interface{}
+	reporters []Reporter
+	chStat    chan Stat
+	chStop    chan interface{}
 
 	errorList   []*Error
 	latencyList []*Latency
@@ -141,10 +139,8 @@ func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
 func New() *Measured {
 	return &Measured{
 		// to avoid blocking when busily reporting stats
-		chStat:       make(chan Stat, 10),
-		chStopReport: make(chan interface{}),
-		chReport:     make(chan Reporter),
-		chStop:       make(chan interface{}),
+		chStat: make(chan Stat, 10),
+		chStop: make(chan interface{}),
 	}
 }
 
