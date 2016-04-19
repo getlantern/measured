@@ -96,7 +96,8 @@ type tickingReporter struct {
 type Measured struct {
 	reporters []Reporter
 	chStat    chan Stat
-	chStop    chan interface{}
+	chStop    chan struct{}
+	stopped   int32
 
 	errorList   []*Error
 	latencyList []*Latency
@@ -140,25 +141,24 @@ func New() *Measured {
 	return &Measured{
 		// to avoid blocking when busily reporting stats
 		chStat: make(chan Stat, 10),
-		chStop: make(chan interface{}),
+		chStop: make(chan struct{}),
 	}
 }
 
 // Start runs the measured loop
 // Reporting interval should be same for all reporters, as cached data should
 // be cleared after each round.
-
 func (m *Measured) Start(reportInterval time.Duration, reporters ...Reporter) {
 	go m.run(reportInterval, reporters...)
 }
 
 // Stop stops the measured loop
 func (m *Measured) Stop() {
-	log.Debug("Stopping measured loop...")
-	select {
-	case m.chStop <- nil:
-	default:
-		log.Error("Failed to send stop signal")
+	if atomic.CompareAndSwapInt32(&m.stopped, 0, 1) {
+		log.Debug("Stopping measured loop...")
+		close(m.chStop)
+	} else {
+		log.Debug("Try to stop already stopped measured loop")
 	}
 }
 
@@ -170,6 +170,7 @@ func (m *Measured) Dialer(d DialFunc, interval time.Duration) DialFunc {
 			m.submitError(addr, err, "dial")
 			return nil, err
 		}
+		log.Tracef("Wraping client connection to %s as measured.Conn", addr)
 		return m.newConn(c, interval), nil
 	}
 }
@@ -192,6 +193,7 @@ func (l *MeasuredListener) Accept() (c net.Conn, err error) {
 	if err != nil {
 		return
 	}
+	log.Tracef("Wraping server connection to %s as measured.Conn", c.RemoteAddr().String())
 	return l.m.newConn(c, l.interval), err
 }
 
@@ -336,7 +338,7 @@ type Conn struct {
 	// total bytes wrote to this connection
 	BytesOut uint64
 	// a channel to stop measure and report statistics
-	chStop chan interface{}
+	chStop chan struct{}
 	m      *Measured
 }
 
@@ -345,7 +347,7 @@ func (m *Measured) newConn(c net.Conn, interval time.Duration) net.Conn {
 	if ra == nil {
 		panic("nil remote address is not allowed")
 	}
-	mc := &Conn{Conn: c, ID: ra.String(), chStop: make(chan interface{}), m: m}
+	mc := &Conn{Conn: c, ID: ra.String(), chStop: make(chan struct{}), m: m}
 	ticker := time.NewTicker(interval)
 	go func() {
 		for {
@@ -388,7 +390,7 @@ func (mc *Conn) Close() (err error) {
 		mc.submitError(err, "close")
 	}
 	mc.submitTraffic()
-	mc.chStop <- nil
+	mc.chStop <- struct{}{}
 	return
 }
 
