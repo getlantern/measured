@@ -75,7 +75,7 @@ func TestCheckContent(t *testing.T) {
 }
 
 func TestRealProxyServer(t *testing.T) {
-	ir := NewInfluxDBReporter("https://influx.getiantem.org/", "test", "test", "lantern", nil)
+	ir := NewInfluxDBReporter("https://influx.getlantern.org/", "test", "test", "lantern", nil)
 	e := ir.ReportError(map[*measured.Error]int{&measured.Error{
 		ID:    "fl-nl-xxx",
 		Error: "test error",

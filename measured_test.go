@@ -4,43 +4,23 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/getlantern/testify/assert"
 )
 
-type mockReporter struct {
-	error   map[Error]int
-	latency []*LatencyTracker
-	traffic []*TrafficTracker
-}
-
-func (nr *mockReporter) ReportError(e map[*Error]int) error {
-	for k, v := range e {
-		nr.error[*k] = v
-	}
-	return nil
-}
-
-func (nr *mockReporter) ReportLatency(l []*LatencyTracker) error {
-	nr.latency = append(nr.latency, l...)
-	return nil
-}
-
-func (nr *mockReporter) ReportTraffic(t []*TrafficTracker) error {
-	nr.traffic = append(nr.traffic, t...)
-	return nil
-}
-
 func TestReportError(t *testing.T) {
-	nr := startWithMockReporter()
-	defer Stop()
-	d := Dialer(net.Dial, 10*time.Second)
+	md, nr := startWithMockReporter()
+	defer md.Stop()
+	d := md.Dialer(net.Dial, 10*time.Second)
 	_, _ = d("tcp", "localhost:9999")
 	_, _ = d("tcp", "localhost:9998")
-	runtime.Gosched()
 	time.Sleep(100 * time.Millisecond)
+	nr.Lock()
+	defer nr.Unlock()
 	if assert.Equal(t, 2, len(nr.error)) {
 		assert.Equal(t, 1, nr.error[Error{"localhost:9999", "connection refused", "dial"}])
 		assert.Equal(t, 1, nr.error[Error{"localhost:9998", "connection refused", "dial"}])
@@ -48,74 +28,121 @@ func TestReportError(t *testing.T) {
 }
 
 func TestReportStats(t *testing.T) {
-	nr := startWithMockReporter()
-	defer Stop()
+	md, nr := startWithMockReporter()
+	defer md.Stop()
 	var bytesIn, bytesOut uint64
 	var RemoteAddr string
 
 	// start server with byte counting
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if assert.NoError(t, err, "Listen should not fail") {
-		// large enough interval so it will only report stats in Close()
-		ml := Listener(l, 10*time.Second)
-		s := http.Server{
-			Handler: http.NotFoundHandler(),
-			ConnState: func(c net.Conn, s http.ConnState) {
-				if s == http.StateIdle {
-					RemoteAddr = c.RemoteAddr().String()
-					mc := c.(*Conn)
-					bytesIn = mc.BytesIn
-					bytesOut = mc.BytesOut
-					time.Sleep(100 * time.Millisecond)
-					_ = mc.Close()
-				}
-			},
-		}
-		go func() { _ = s.Serve(ml) }()
+	if !assert.NoError(t, err, "Listen should not fail") {
+		return
 	}
 
+	// large enough interval so it will only report stats in Close()
+	ml := md.Listener(l, 10*time.Second)
+	s := http.Server{
+		Handler: http.NotFoundHandler(),
+		ConnState: func(c net.Conn, s http.ConnState) {
+			if s == http.StateIdle {
+				RemoteAddr = c.RemoteAddr().String()
+				mc := c.(*Conn)
+				atomic.StoreUint64(&bytesIn, mc.BytesIn)
+				atomic.StoreUint64(&bytesOut, mc.BytesOut)
+			}
+		},
+	}
+	go func() { _ = s.Serve(ml) }()
+
+	time.Sleep(100 * time.Millisecond)
 	// start client with byte counting
 	c := http.Client{
 		Transport: &http.Transport{
 			// carefully chosen interval to report another once before Close()
-			Dial: Dialer(net.Dial, 160*time.Millisecond),
+			Dial: md.Dialer(net.Dial, 160*time.Millisecond),
 		},
 	}
 	req, _ := http.NewRequest("GET", "http://"+l.Addr().String(), nil)
 	resp, _ := c.Do(req)
 	assert.Equal(t, 404, resp.StatusCode)
+	assert.True(t, atomic.LoadUint64(&bytesIn) > 0, "should count bytesIn")
+	assert.True(t, atomic.LoadUint64(&bytesOut) > 0, "should count bytesOut")
+
+	// make sure client will report another once
+	time.Sleep(200 * time.Millisecond)
+	// Close without reading from body, to force server to close connection
 	_ = resp.Body.Close()
-	assert.True(t, bytesIn > 0, "should count bytesIn")
-	assert.True(t, bytesOut > 0, "should count bytesOut")
-
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	// verify both client and server stats
+	nr.Lock()
+	defer nr.Unlock()
 	if assert.Equal(t, 3, len(nr.traffic)) {
-		e := nr.traffic[1]
-		assert.Equal(t, RemoteAddr, e.ID, "should report server stats with Remote addr")
-		assert.Equal(t, bytesIn, e.TotalIn, "should report server stats with bytes in")
-		assert.Equal(t, bytesOut, e.TotalOut, "should report server stats with bytes out")
-		assert.Equal(t, bytesIn, e.MinIn, "should report server stats with bytes in")
-		assert.Equal(t, bytesOut, e.MinOut, "should report server stats with bytes out")
+		e := nr.traffic[0]
+		assert.Equal(t, l.Addr().String(), e.ID, "client stats should report server as remote addr")
+		assert.Equal(t, bytesIn, e.MinOut, "client stats should report same byte count as server")
+		assert.Equal(t, bytesOut, e.MinIn, "client stats should report same byte count as server")
+		assert.Equal(t, bytesIn, e.LastOut, "client stats should report same byte count as server")
+		assert.Equal(t, bytesOut, e.LastIn, "client stats should report same byte count as server")
+		assert.Equal(t, bytesIn, e.TotalOut, "client stats should report same byte count as server")
+		assert.Equal(t, bytesOut, e.TotalIn, "client stats should report same byte count as server")
 
-		e = nr.traffic[0]
-		assert.Equal(t, l.Addr().String(), e.ID, "should report server as Remote addr")
-		assert.Equal(t, bytesIn, e.MinOut, "should report same byte count as server")
-		assert.Equal(t, bytesOut, e.MinIn, "should report same byte count as server")
-
-		e = nr.traffic[2]
-		assert.Equal(t, l.Addr().String(), e.ID, "should report server as Remote addr")
+		e = nr.traffic[1]
+		assert.Equal(t, l.Addr().String(), e.ID, "client stats should report server as remote addr")
 		assert.Equal(t, uint64(0), e.MinOut, "should only report increased byte count")
 		assert.Equal(t, uint64(0), e.MinIn, "should only report increased byte count")
+		assert.Equal(t, uint64(0), e.LastOut, "should only report increased byte count")
+		assert.Equal(t, uint64(0), e.LastIn, "should only report increased byte count")
+		assert.Equal(t, uint64(0), e.TotalOut, "should only report increased byte count")
+		assert.Equal(t, uint64(0), e.TotalIn, "should only report increased byte count")
+
+		e = nr.traffic[2]
+		assert.Equal(t, RemoteAddr, e.ID, "should report server stats with client addr as ID")
+		assert.Equal(t, bytesIn, e.TotalIn, "should report server stats with bytes in")
+		assert.Equal(t, bytesOut, e.TotalOut, "should report server stats with bytes out")
+		assert.Equal(t, bytesIn, e.LastIn, "should report server stats with bytes in")
+		assert.Equal(t, bytesOut, e.LastOut, "should report server stats with bytes out")
+		assert.Equal(t, bytesIn, e.MinIn, "should report server stats with bytes in")
+		assert.Equal(t, bytesOut, e.MinOut, "should report server stats with bytes out")
 	}
 }
 
-func startWithMockReporter() *mockReporter {
+func startWithMockReporter() (*Measured, *mockReporter) {
 	nr := mockReporter{
 		error: make(map[Error]int),
 	}
-	Start(50*time.Millisecond, &nr)
+	md := New()
+	md.Start(50*time.Millisecond, &nr)
 	// To make sure it really started
 	runtime.Gosched()
-	return &nr
+	return md, &nr
+}
+
+type mockReporter struct {
+	sync.Mutex
+	error   map[Error]int
+	latency []*LatencyTracker
+	traffic []*TrafficTracker
+}
+
+func (nr *mockReporter) ReportError(e map[*Error]int) error {
+	nr.Lock()
+	defer nr.Unlock()
+	for k, v := range e {
+		nr.error[*k] = v
+	}
+	return nil
+}
+
+func (nr *mockReporter) ReportLatency(l []*LatencyTracker) error {
+	nr.Lock()
+	defer nr.Unlock()
+	nr.latency = append(nr.latency, l...)
+	return nil
+}
+
+func (nr *mockReporter) ReportTraffic(t []*TrafficTracker) error {
+	nr.Lock()
+	defer nr.Unlock()
+	nr.traffic = append(nr.traffic, t...)
+	return nil
 }

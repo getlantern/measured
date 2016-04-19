@@ -21,27 +21,32 @@ import (
 	"github.com/getlantern/golog"
 )
 
-// Stats encapsulates the statistics to report
+// Stat encapsulates the statistics to report
 type Stat interface {
-	Type() string
+	statType() string
 }
 
+// Error encapsulates the error to report
 type Error struct {
 	ID    string
 	Error string
 	Phase string
 }
 
+// Latency encapsulates the latency data to report
 type Latency struct {
 	ID      string
 	Latency time.Duration
 }
+
+// Traffic encapsulates the traffic data to report
 type Traffic struct {
 	ID       string
 	BytesIn  uint64
 	BytesOut uint64
 }
 
+// LatencyTracker tracks latency in single reporting period
 type LatencyTracker struct {
 	ID        string
 	Min       time.Duration
@@ -50,6 +55,7 @@ type LatencyTracker struct {
 	Last      time.Duration
 }
 
+// TrafficTracker tracks traffic in single reporting period
 type TrafficTracker struct {
 	ID           string
 	MinIn        uint64
@@ -70,9 +76,9 @@ const (
 	typeTraffic = "traffic"
 )
 
-func (e Error) Type() string   { return typeError }
-func (e Latency) Type() string { return typeLatency }
-func (e Traffic) Type() string { return typeTraffic }
+func (e Error) statType() string   { return typeError }
+func (e Latency) statType() string { return typeLatency }
+func (e Traffic) statType() string { return typeTraffic }
 
 // Reporter encapsulates different ways to report statistics
 type Reporter interface {
@@ -86,59 +92,96 @@ type tickingReporter struct {
 	r Reporter
 }
 
-var (
+// Measured is the controller to report statistics
+type Measured struct {
 	reporters []Reporter
-	log       = golog.LoggerFor("measured")
-	// to avoid blocking when busily reporting stats
-	chStat       = make(chan Stat, 10)
-	chStopReport = make(chan interface{})
-	chReport     = make(chan Reporter)
-	chStop       = make(chan interface{})
+	chStat    chan Stat
+	chStop    chan struct{}
+	stopped   int32
 
 	errorList   []*Error
 	latencyList []*Latency
 	trafficList []*Traffic
+}
+
+var (
+	defaultMeasured *Measured
+	log             = golog.LoggerFor("measured")
 )
+
+func init() {
+	defaultMeasured = New()
+}
 
 // DialFunc is the type of function measured can wrap
 type DialFunc func(net, addr string) (net.Conn, error)
 
+// Start the default measured instance
+func Start(reportInterval time.Duration, reporters ...Reporter) {
+	defaultMeasured.Start(reportInterval, reporters...)
+}
+
+// Stop the default measured instance
+func Stop() {
+	defaultMeasured.Stop()
+}
+
+// Dialer calls Dialer of the default measured instance
+func Dialer(d DialFunc, interval time.Duration) DialFunc {
+	return defaultMeasured.Dialer(d, interval)
+}
+
+// Listener calls Listener of the default measured instance
+func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
+	return defaultMeasured.Listener(l, interval)
+}
+
+// New creates a new Measured instance
+func New() *Measured {
+	return &Measured{
+		// to avoid blocking when busily reporting stats
+		chStat: make(chan Stat, 10),
+		chStop: make(chan struct{}),
+	}
+}
+
 // Start runs the measured loop
 // Reporting interval should be same for all reporters, as cached data should
 // be cleared after each round.
-
-func Start(reportInterval time.Duration, reporters ...Reporter) {
-	go run(reportInterval, reporters...)
+func (m *Measured) Start(reportInterval time.Duration, reporters ...Reporter) {
+	go m.run(reportInterval, reporters...)
 }
 
 // Stop stops the measured loop
-func Stop() {
-	log.Debug("Stopping measured loop...")
-	select {
-	case chStop <- nil:
-	default:
-		log.Error("Failed to send stop signal")
+func (m *Measured) Stop() {
+	if atomic.CompareAndSwapInt32(&m.stopped, 0, 1) {
+		log.Debug("Stopping measured loop...")
+		close(m.chStop)
+	} else {
+		log.Debug("Try to stop already stopped measured loop")
 	}
 }
 
 // Dialer wraps a dial function to measure various statistics
-func Dialer(d DialFunc, interval time.Duration) DialFunc {
+func (m *Measured) Dialer(d DialFunc, interval time.Duration) DialFunc {
 	return func(net, addr string) (net.Conn, error) {
 		c, err := d(net, addr)
 		if err != nil {
-			submitError(addr, err, "dial")
+			m.submitError(addr, err, "dial")
 			return nil, err
 		}
-		return newConn(c, interval), nil
+		log.Tracef("Wraping client connection to %s as measured.Conn", addr)
+		return m.newConn(c, interval), nil
 	}
 }
 
-// Dialer wraps a dial function to measure various statistics
-func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
-	return &MeasuredListener{l, interval}
+// Listener wraps a listener to measure various statistics of each connection it accepts
+func (m *Measured) Listener(l net.Listener, interval time.Duration) *MeasuredListener {
+	return &MeasuredListener{m, l, interval}
 }
 
 type MeasuredListener struct {
+	m *Measured
 	net.Listener
 	interval time.Duration
 }
@@ -150,57 +193,58 @@ func (l *MeasuredListener) Accept() (c net.Conn, err error) {
 	if err != nil {
 		return
 	}
-	return newConn(c, l.interval), err
+	log.Tracef("Wraping server connection to %s as measured.Conn", c.RemoteAddr().String())
+	return l.m.newConn(c, l.interval), err
 }
 
-func run(reportInterval time.Duration, reporters ...Reporter) {
-	log.Debug("Measured loop started")
+func (m *Measured) run(reportInterval time.Duration, reporters ...Reporter) {
+	log.Debugf("Measured loop started with %d reporter(s) and interval %v", len(reporters), reportInterval)
+	m.reporters = reporters
 	t := time.NewTicker(reportInterval)
 	for {
 		select {
-		case s := <-chStat:
-			switch s.Type() {
+		case s := <-m.chStat:
+			switch s.statType() {
 			case typeError:
-				errorList = append(errorList, s.(*Error))
+				m.errorList = append(m.errorList, s.(*Error))
 			case typeLatency:
-				latencyList = append(latencyList, s.(*Latency))
+				m.latencyList = append(m.latencyList, s.(*Latency))
 			case typeTraffic:
-				trafficList = append(trafficList, s.(*Traffic))
+				m.trafficList = append(m.trafficList, s.(*Traffic))
 			}
 		case <-t.C:
-			newErrorList := errorList
-			errorList = []*Error{}
-			newLatencyList := latencyList
-			latencyList = []*Latency{}
-			newTrafficList := trafficList
-			trafficList = []*Traffic{}
+			newErrorList := m.errorList
+			m.errorList = []*Error{}
+			newLatencyList := m.latencyList
+			m.latencyList = []*Latency{}
+			newTrafficList := m.trafficList
+			m.trafficList = []*Traffic{}
 			go func() {
 				if len(newErrorList) > 0 {
-					reportError(newErrorList, reporters)
+					m.reportError(newErrorList)
 				}
 
 				if len(newLatencyList) > 0 {
-					reportLatency(newLatencyList, reporters)
+					m.reportLatency(newLatencyList)
 				}
 
 				if len(newTrafficList) > 0 {
-					reportTraffic(newTrafficList, reporters)
+					m.reportTraffic(newTrafficList)
 				}
 			}()
-		case <-chStop:
+		case <-m.chStop:
 			log.Debug("Measured loop stopped")
 			return
 		}
 	}
 }
 
-func reportError(el []*Error, reporters []Reporter) {
-	log.Tracef("Reporting %d error entry", len(el))
+func (m *Measured) reportError(el []*Error) {
 	errors := make(map[*Error]int)
 	for _, e := range el {
 		errors[e] = errors[e] + 1
 	}
-	for _, r := range reporters {
+	for _, r := range m.reporters {
 		if err := r.ReportError(errors); err != nil {
 			log.Errorf("Failed to report error to %s: %s", reflect.TypeOf(r), err)
 		}
@@ -213,8 +257,7 @@ func (a latencySorter) Len() int           { return len(a) }
 func (a latencySorter) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a latencySorter) Less(i, j int) bool { return a[i].Latency < a[j].Latency }
 
-func reportLatency(ll []*Latency, reporters []Reporter) {
-	log.Tracef("Reporting %d latency entry", len(ll))
+func (m *Measured) reportLatency(ll []*Latency) {
 	lm := make(map[string][]*Latency)
 	for _, l := range ll {
 		lm[l.ID] = append(lm[l.ID], l)
@@ -230,7 +273,8 @@ func reportLatency(ll []*Latency, reporters []Reporter) {
 		t.Percent95 = l[p95].Latency
 		trackers = append(trackers, &t)
 	}
-	for _, r := range reporters {
+	log.Tracef("Reporting %d latency entry", len(trackers))
+	for _, r := range m.reporters {
 		if err := r.ReportLatency(trackers); err != nil {
 			log.Errorf("Failed to report latency data to %s: %s", reflect.TypeOf(r), err)
 		}
@@ -249,8 +293,7 @@ func (a trafficByBytesOut) Len() int           { return len(a) }
 func (a trafficByBytesOut) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a trafficByBytesOut) Less(i, j int) bool { return a[i].BytesOut < a[j].BytesOut }
 
-func reportTraffic(tl []*Traffic, reporters []Reporter) {
-	log.Tracef("Reporting %d traffic entry", len(tl))
+func (m *Measured) reportTraffic(tl []*Traffic) {
 	tm := make(map[string][]*Traffic)
 	for _, t := range tl {
 		tm[t.ID] = append(tm[t.ID], t)
@@ -277,7 +320,8 @@ func reportTraffic(tl []*Traffic, reporters []Reporter) {
 		t.Percent95Out = l[p95].BytesOut
 		trackers = append(trackers, &t)
 	}
-	for _, r := range reporters {
+	log.Tracef("Reporting %d traffic entry", len(trackers))
+	for _, r := range m.reporters {
 		if err := r.ReportTraffic(trackers); err != nil {
 			log.Errorf("Failed to report traffic data to %s: %s", reflect.TypeOf(r), err)
 		}
@@ -294,15 +338,16 @@ type Conn struct {
 	// total bytes wrote to this connection
 	BytesOut uint64
 	// a channel to stop measure and report statistics
-	chStop chan interface{}
+	chStop chan struct{}
+	m      *Measured
 }
 
-func newConn(c net.Conn, interval time.Duration) net.Conn {
+func (m *Measured) newConn(c net.Conn, interval time.Duration) net.Conn {
 	ra := c.RemoteAddr()
 	if ra == nil {
 		panic("nil remote address is not allowed")
 	}
-	mc := &Conn{Conn: c, ID: ra.String(), chStop: make(chan interface{})}
+	mc := &Conn{Conn: c, ID: ra.String(), chStop: make(chan struct{}), m: m}
 	ticker := time.NewTicker(interval)
 	go func() {
 		for {
@@ -338,28 +383,28 @@ func (mc *Conn) Write(b []byte) (n int, err error) {
 	return
 }
 
-// Close() implements the function from net.Conn
+// Close implements the function from net.Conn
 func (mc *Conn) Close() (err error) {
 	err = mc.Conn.Close()
 	if err != nil {
 		mc.submitError(err, "close")
 	}
 	mc.submitTraffic()
-	mc.chStop <- nil
+	mc.chStop <- struct{}{}
 	return
 }
 
 func (mc *Conn) submitError(err error, phase string) {
-	submitError(mc.ID, err, phase)
+	mc.m.submitError(mc.ID, err, phase)
 }
 
 func (mc *Conn) submitTraffic() {
-	submitTraffic(mc.ID,
+	mc.m.submitTraffic(mc.ID,
 		atomic.SwapUint64(&mc.BytesIn, 0),
 		atomic.SwapUint64(&mc.BytesOut, 0))
 }
 
-func submitError(remoteAddr string, err error, phase string) {
+func (m *Measured) submitError(connID string, err error, phase string) {
 	splitted := strings.Split(err.Error(), ":")
 	lastIndex := len(splitted) - 1
 	if lastIndex < 0 {
@@ -367,27 +412,27 @@ func submitError(remoteAddr string, err error, phase string) {
 	}
 	e := strings.Trim(splitted[lastIndex], " ")
 	er := &Error{
-		ID:    remoteAddr,
+		ID:    connID,
 		Error: e,
 		Phase: phase,
 	}
 	log.Tracef("Submiting error %+v", er)
 	select {
-	case chStat <- er:
+	case m.chStat <- er:
 	default:
 		log.Error("Failed to submit error, channel busy")
 	}
 }
 
-func submitTraffic(remoteAddr string, BytesIn uint64, BytesOut uint64) {
+func (m *Measured) submitTraffic(connID string, BytesIn uint64, BytesOut uint64) {
 	t := &Traffic{
-		ID:       remoteAddr,
+		ID:       connID,
 		BytesIn:  BytesIn,
 		BytesOut: BytesOut,
 	}
 	log.Tracef("Submiting traffic %+v", t)
 	select {
-	case chStat <- t:
+	case m.chStat <- t:
 	default:
 		log.Error("Failed to submit traffic, channel busy")
 	}
