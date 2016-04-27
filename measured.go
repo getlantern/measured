@@ -140,8 +140,9 @@ func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
 func New() *Measured {
 	return &Measured{
 		// to avoid blocking when busily reporting stats
-		chStat: make(chan Stat, 10),
-		chStop: make(chan struct{}),
+		chStat:  make(chan Stat, 10),
+		chStop:  make(chan struct{}),
+		stopped: 1,
 	}
 }
 
@@ -149,7 +150,11 @@ func New() *Measured {
 // Reporting interval should be same for all reporters, as cached data should
 // be cleared after each round.
 func (m *Measured) Start(reportInterval time.Duration, reporters ...Reporter) {
-	go m.run(reportInterval, reporters...)
+	if atomic.CompareAndSwapInt32(&m.stopped, 1, 0) {
+		go m.run(reportInterval, reporters...)
+	} else {
+		log.Debug("measured loop already started")
+	}
 }
 
 // Stop stops the measured loop
@@ -405,6 +410,10 @@ func (mc *Conn) submitTraffic() {
 }
 
 func (m *Measured) submitError(connID string, err error, phase string) {
+	if atomic.LoadInt32(&m.stopped) == 1 {
+		log.Trace("Measured stopped, not submitting error")
+		return
+	}
 	splitted := strings.Split(err.Error(), ":")
 	lastIndex := len(splitted) - 1
 	if lastIndex < 0 {
@@ -416,24 +425,20 @@ func (m *Measured) submitError(connID string, err error, phase string) {
 		Error: e,
 		Phase: phase,
 	}
-	log.Tracef("Submiting error %+v", er)
-	select {
-	case m.chStat <- er:
-	default:
-		log.Error("Failed to submit error, channel busy")
-	}
+	log.Tracef("Submitting error %+v", er)
+	m.chStat <- er
 }
 
 func (m *Measured) submitTraffic(connID string, BytesIn uint64, BytesOut uint64) {
+	if atomic.LoadInt32(&m.stopped) == 1 {
+		log.Trace("Measured stopped, not submitting traffic")
+		return
+	}
 	t := &Traffic{
 		ID:       connID,
 		BytesIn:  BytesIn,
 		BytesOut: BytesOut,
 	}
-	log.Tracef("Submiting traffic %+v", t)
-	select {
-	case m.chStat <- t:
-	default:
-		log.Error("Failed to submit traffic, channel busy")
-	}
+	log.Tracef("Submitting traffic %+v", t)
+	m.chStat <- t
 }
