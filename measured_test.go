@@ -27,6 +27,18 @@ func TestReportError(t *testing.T) {
 	}
 }
 
+func TestStop(t *testing.T) {
+	md, nr := startWithMockReporter()
+	md.Stop()
+	d := md.Dialer(net.Dial, 10*time.Second)
+	_, _ = d("tcp", "localhost:9999")
+	_, _ = d("tcp", "localhost:9998")
+	time.Sleep(100 * time.Millisecond)
+	nr.Lock()
+	defer nr.Unlock()
+	assert.Equal(t, 0, len(nr.error), "stopped measured should not submit any metrics")
+}
+
 func TestReportStats(t *testing.T) {
 	md, nr := startWithMockReporter()
 	defer md.Stop()
