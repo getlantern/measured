@@ -21,7 +21,30 @@ func TestReportError(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	nr.Lock()
 	defer nr.Unlock()
-	if assert.Equal(t, 2, len(nr.error)) {
+	if assert.Equal(t, 2, len(nr.error), "should report errors") {
+		assert.Equal(t, 1, nr.error[Error{"localhost:9999", "connection refused", "dial"}])
+		assert.Equal(t, 1, nr.error[Error{"localhost:9998", "connection refused", "dial"}])
+	}
+}
+
+func TestStopAndRestart(t *testing.T) {
+	md, nr := startWithMockReporter()
+	md.Stop()
+	d := md.Dialer(net.Dial, 10*time.Second)
+	_, _ = d("tcp", "localhost:9999")
+	_, _ = d("tcp", "localhost:9998")
+	time.Sleep(100 * time.Millisecond)
+	nr.Lock()
+	assert.Equal(t, 0, len(nr.error), "stopped measured should not submit any metrics")
+	nr.Unlock()
+	md.Start(50*time.Millisecond, nr)
+	defer md.Stop()
+	_, _ = d("tcp", "localhost:9999")
+	_, _ = d("tcp", "localhost:9998")
+	time.Sleep(100 * time.Millisecond)
+	nr.Lock()
+	defer nr.Unlock()
+	if assert.Equal(t, 2, len(nr.error), "should report again if restarted") {
 		assert.Equal(t, 1, nr.error[Error{"localhost:9999", "connection refused", "dial"}])
 		assert.Equal(t, 1, nr.error[Error{"localhost:9998", "connection refused", "dial"}])
 	}
@@ -77,6 +100,7 @@ func TestReportStats(t *testing.T) {
 	nr.Lock()
 	defer nr.Unlock()
 	if assert.Equal(t, 3, len(nr.traffic)) {
+		t.Logf("Traffic entries: %+v", nr.traffic)
 		e := nr.traffic[0]
 		assert.Equal(t, l.Addr().String(), e.ID, "client stats should report server as remote addr")
 		assert.Equal(t, bytesIn, e.MinOut, "client stats should report same byte count as server")
@@ -86,23 +110,26 @@ func TestReportStats(t *testing.T) {
 		assert.Equal(t, bytesIn, e.TotalOut, "client stats should report same byte count as server")
 		assert.Equal(t, bytesOut, e.TotalIn, "client stats should report same byte count as server")
 
-		e = nr.traffic[1]
-		assert.Equal(t, l.Addr().String(), e.ID, "client stats should report server as remote addr")
-		assert.Equal(t, uint64(0), e.MinOut, "should only report increased byte count")
-		assert.Equal(t, uint64(0), e.MinIn, "should only report increased byte count")
-		assert.Equal(t, uint64(0), e.LastOut, "should only report increased byte count")
-		assert.Equal(t, uint64(0), e.LastIn, "should only report increased byte count")
-		assert.Equal(t, uint64(0), e.TotalOut, "should only report increased byte count")
-		assert.Equal(t, uint64(0), e.TotalIn, "should only report increased byte count")
+		// entries reported in a batch are in random order
+		for _, e = range nr.traffic[1:] {
+			if e.ID == l.Addr().String() {
+				assert.Equal(t, uint64(0), e.MinOut, "client stats should only report increased byte count")
+				assert.Equal(t, uint64(0), e.MinIn, "client stats should only report increased byte count")
+				assert.Equal(t, uint64(0), e.LastOut, "client stats should only report increased byte count")
+				assert.Equal(t, uint64(0), e.LastIn, "client stats should only report increased byte count")
+				assert.Equal(t, uint64(0), e.TotalOut, "client stats should only report increased byte count")
+				assert.Equal(t, uint64(0), e.TotalIn, "client stats should only report increased byte count")
 
-		e = nr.traffic[2]
-		assert.Equal(t, RemoteAddr, e.ID, "should report server stats with client addr as ID")
-		assert.Equal(t, bytesIn, e.TotalIn, "should report server stats with bytes in")
-		assert.Equal(t, bytesOut, e.TotalOut, "should report server stats with bytes out")
-		assert.Equal(t, bytesIn, e.LastIn, "should report server stats with bytes in")
-		assert.Equal(t, bytesOut, e.LastOut, "should report server stats with bytes out")
-		assert.Equal(t, bytesIn, e.MinIn, "should report server stats with bytes in")
-		assert.Equal(t, bytesOut, e.MinOut, "should report server stats with bytes out")
+			} else {
+				assert.Equal(t, RemoteAddr, e.ID, "should report server stats with client addr as ID")
+				assert.Equal(t, bytesIn, e.TotalIn, "should report server stats with bytes in")
+				assert.Equal(t, bytesOut, e.TotalOut, "should report server stats with bytes out")
+				assert.Equal(t, bytesIn, e.LastIn, "should report server stats with bytes in")
+				assert.Equal(t, bytesOut, e.LastOut, "should report server stats with bytes out")
+				assert.Equal(t, bytesIn, e.MinIn, "should report server stats with bytes in")
+				assert.Equal(t, bytesOut, e.MinOut, "should report server stats with bytes out")
+			}
+		}
 	}
 }
 

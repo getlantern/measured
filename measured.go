@@ -11,6 +11,7 @@ A list of reporters can be plugged in to send the results to different target.
 package measured
 
 import (
+	"fmt"
 	"net"
 	"reflect"
 	"sort"
@@ -55,6 +56,10 @@ type LatencyTracker struct {
 	Last      time.Duration
 }
 
+func (t *LatencyTracker) String() string {
+	return fmt.Sprintf("%+v", *t)
+}
+
 // TrafficTracker tracks traffic in single reporting period
 type TrafficTracker struct {
 	ID           string
@@ -68,6 +73,10 @@ type TrafficTracker struct {
 	Percent95Out uint64
 	LastOut      uint64
 	TotalOut     uint64
+}
+
+func (t *TrafficTracker) String() string {
+	return fmt.Sprintf("%+v", *t)
 }
 
 const (
@@ -140,23 +149,28 @@ func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
 func New() *Measured {
 	return &Measured{
 		// to avoid blocking when busily reporting stats
-		chStat: make(chan Stat, 10),
-		chStop: make(chan struct{}),
+		chStat:  make(chan Stat),
+		chStop:  make(chan struct{}),
+		stopped: 1,
 	}
 }
 
-// Start runs the measured loop
+// Start runs a new or stopped measured loop
 // Reporting interval should be same for all reporters, as cached data should
 // be cleared after each round.
 func (m *Measured) Start(reportInterval time.Duration, reporters ...Reporter) {
-	go m.run(reportInterval, reporters...)
+	if atomic.CompareAndSwapInt32(&m.stopped, 1, 0) {
+		go m.run(reportInterval, reporters...)
+	} else {
+		log.Debug("measured loop already started")
+	}
 }
 
 // Stop stops the measured loop
 func (m *Measured) Stop() {
 	if atomic.CompareAndSwapInt32(&m.stopped, 0, 1) {
 		log.Debug("Stopping measured loop...")
-		close(m.chStop)
+		m.chStop <- struct{}{}
 	} else {
 		log.Debug("Try to stop already stopped measured loop")
 	}
@@ -320,7 +334,7 @@ func (m *Measured) reportTraffic(tl []*Traffic) {
 		t.Percent95Out = l[p95].BytesOut
 		trackers = append(trackers, &t)
 	}
-	log.Tracef("Reporting %d traffic entry", len(trackers))
+	log.Tracef("Reporting %d traffic entries", len(trackers))
 	for _, r := range m.reporters {
 		if err := r.ReportTraffic(trackers); err != nil {
 			log.Errorf("Failed to report traffic data to %s: %s", reflect.TypeOf(r), err)
@@ -405,6 +419,10 @@ func (mc *Conn) submitTraffic() {
 }
 
 func (m *Measured) submitError(connID string, err error, phase string) {
+	if atomic.LoadInt32(&m.stopped) == 1 {
+		log.Trace("Measured stopped, not submitting error")
+		return
+	}
 	splitted := strings.Split(err.Error(), ":")
 	lastIndex := len(splitted) - 1
 	if lastIndex < 0 {
@@ -416,24 +434,20 @@ func (m *Measured) submitError(connID string, err error, phase string) {
 		Error: e,
 		Phase: phase,
 	}
-	log.Tracef("Submiting error %+v", er)
-	select {
-	case m.chStat <- er:
-	default:
-		log.Error("Failed to submit error, channel busy")
-	}
+	log.Tracef("Submitting error %+v", er)
+	m.chStat <- er
 }
 
 func (m *Measured) submitTraffic(connID string, BytesIn uint64, BytesOut uint64) {
+	if atomic.LoadInt32(&m.stopped) == 1 {
+		log.Trace("Measured stopped, not submitting traffic")
+		return
+	}
 	t := &Traffic{
 		ID:       connID,
 		BytesIn:  BytesIn,
 		BytesOut: BytesOut,
 	}
-	log.Tracef("Submiting traffic %+v", t)
-	select {
-	case m.chStat <- t:
-	default:
-		log.Error("Failed to submit traffic, channel busy")
-	}
+	log.Tracef("Submitting traffic %+v", t)
+	m.chStat <- t
 }
