@@ -11,6 +11,7 @@ A list of reporters can be plugged in to send the results to different target.
 package measured
 
 import (
+	"fmt"
 	"net"
 	"reflect"
 	"sort"
@@ -55,6 +56,10 @@ type LatencyTracker struct {
 	Last      time.Duration
 }
 
+func (t *LatencyTracker) String() string {
+	return fmt.Sprintf("%+v", *t)
+}
+
 // TrafficTracker tracks traffic in single reporting period
 type TrafficTracker struct {
 	ID           string
@@ -68,6 +73,10 @@ type TrafficTracker struct {
 	Percent95Out uint64
 	LastOut      uint64
 	TotalOut     uint64
+}
+
+func (t *TrafficTracker) String() string {
+	return fmt.Sprintf("%+v", *t)
 }
 
 const (
@@ -141,16 +150,16 @@ func New() *Measured {
 	return &Measured{
 		// to avoid blocking when busily reporting stats
 		chStat:  make(chan Stat),
-		chStop:  make(chan struct{}),
 		stopped: 1,
 	}
 }
 
-// Start runs the measured loop
+// Start runs a new or stopped measured loop
 // Reporting interval should be same for all reporters, as cached data should
 // be cleared after each round.
 func (m *Measured) Start(reportInterval time.Duration, reporters ...Reporter) {
 	if atomic.CompareAndSwapInt32(&m.stopped, 1, 0) {
+		m.chStop = make(chan struct{})
 		go m.run(reportInterval, reporters...)
 	} else {
 		log.Debug("measured loop already started")
@@ -325,7 +334,7 @@ func (m *Measured) reportTraffic(tl []*Traffic) {
 		t.Percent95Out = l[p95].BytesOut
 		trackers = append(trackers, &t)
 	}
-	log.Tracef("Reporting %d traffic entry", len(trackers))
+	log.Tracef("Reporting %d traffic entries", len(trackers))
 	for _, r := range m.reporters {
 		if err := r.ReportTraffic(trackers); err != nil {
 			log.Errorf("Failed to report traffic data to %s: %s", reflect.TypeOf(r), err)
