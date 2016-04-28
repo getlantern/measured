@@ -150,6 +150,7 @@ func New() *Measured {
 	return &Measured{
 		// to avoid blocking when busily reporting stats
 		chStat:  make(chan Stat),
+		chStop:  make(chan struct{}),
 		stopped: 1,
 	}
 }
@@ -159,7 +160,6 @@ func New() *Measured {
 // be cleared after each round.
 func (m *Measured) Start(reportInterval time.Duration, reporters ...Reporter) {
 	if atomic.CompareAndSwapInt32(&m.stopped, 1, 0) {
-		m.chStop = make(chan struct{})
 		go m.run(reportInterval, reporters...)
 	} else {
 		log.Debug("measured loop already started")
@@ -170,7 +170,7 @@ func (m *Measured) Start(reportInterval time.Duration, reporters ...Reporter) {
 func (m *Measured) Stop() {
 	if atomic.CompareAndSwapInt32(&m.stopped, 0, 1) {
 		log.Debug("Stopping measured loop...")
-		close(m.chStop)
+		m.chStop <- struct{}{}
 	} else {
 		log.Debug("Try to stop already stopped measured loop")
 	}
