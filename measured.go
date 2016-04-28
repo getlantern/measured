@@ -140,7 +140,7 @@ func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
 func New() *Measured {
 	return &Measured{
 		// to avoid blocking when busily reporting stats
-		chStat:  make(chan Stat, 10),
+		chStat:  make(chan Stat),
 		chStop:  make(chan struct{}),
 		stopped: 1,
 	}
