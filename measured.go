@@ -65,36 +65,11 @@ type Measured struct {
 }
 
 var (
-	defaultMeasured *Measured
-	log             = golog.LoggerFor("measured")
+	log = golog.LoggerFor("measured")
 )
-
-func init() {
-	defaultMeasured = New(50000)
-}
 
 // DialFunc is the type of function measured can wrap
 type DialFunc func(net, addr string) (net.Conn, error)
-
-// Start the default measured instance
-func Start(reportInterval time.Duration, reporters ...Reporter) {
-	defaultMeasured.Start(reportInterval, reporters...)
-}
-
-// Stop the default measured instance
-func Stop() {
-	defaultMeasured.Stop()
-}
-
-// Dialer calls Dialer of the default measured instance
-func Dialer(d DialFunc, interval time.Duration) DialFunc {
-	return defaultMeasured.Dialer(d, interval)
-}
-
-// Listener calls Listener of the default measured instance
-func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
-	return defaultMeasured.Listener(l, interval)
-}
 
 // New creates a new Measured instance
 func New(maxBufferSize int) *Measured {
