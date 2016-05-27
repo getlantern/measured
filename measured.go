@@ -1,8 +1,7 @@
 /*
-Package measured wraps a dialer/listener to measure the latency (only for
-client connection), throughput and errors of the connection made/accepted.
-
-Throughput is represented as total bytes sent/received between each interval.
+Package measured wraps a dialer/listener to measure the throughput on those
+connections. Throughput is represented as total bytes sent/received between each
+interval.
 
 ID is the remote address by default.
 
@@ -11,34 +10,14 @@ A list of reporters can be plugged in to send the results to different target.
 package measured
 
 import (
-	"fmt"
 	"net"
 	"reflect"
-	"sort"
-	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/golog"
 )
-
-// Stat encapsulates the statistics to report
-type Stat interface {
-	statType() string
-}
-
-// Error encapsulates the error to report
-type Error struct {
-	ID    string
-	Error string
-	Phase string
-}
-
-// Latency encapsulates the latency data to report
-type Latency struct {
-	ID      string
-	Latency time.Duration
-}
 
 // Traffic encapsulates the traffic data to report
 type Traffic struct {
@@ -47,53 +26,26 @@ type Traffic struct {
 	BytesOut uint64
 }
 
-// LatencyTracker tracks latency in single reporting period
-type LatencyTracker struct {
-	ID        string
-	Min       time.Duration
-	Max       time.Duration
-	Percent95 time.Duration
-	Last      time.Duration
-}
-
-func (t *LatencyTracker) String() string {
-	return fmt.Sprintf("%+v", *t)
-}
-
 // TrafficTracker tracks traffic in single reporting period
 type TrafficTracker struct {
-	ID           string
-	MinIn        uint64
-	MaxIn        uint64
-	Percent95In  uint64
-	LastIn       uint64
-	TotalIn      uint64
-	MinOut       uint64
-	MaxOut       uint64
-	Percent95Out uint64
-	LastOut      uint64
-	TotalOut     uint64
+	MinIn uint64
+	MaxIn uint64
+	// Temporarily disabling percentiles since we're not using them. Should we
+	// need them, we could use a streaming algorithm to compute them, like this:
+	// http://www.cs.rutgers.edu/~muthu/bquant.pdf
+	//Percent95In  uint64
+	LastIn  uint64
+	TotalIn uint64
+	MinOut  uint64
+	MaxOut  uint64
+	//Percent95Out uint64
+	LastOut  uint64
+	TotalOut uint64
 }
-
-func (t *TrafficTracker) String() string {
-	return fmt.Sprintf("%+v", *t)
-}
-
-const (
-	typeError   = "error"
-	typeLatency = "latency"
-	typeTraffic = "traffic"
-)
-
-func (e Error) statType() string   { return typeError }
-func (e Latency) statType() string { return typeLatency }
-func (e Traffic) statType() string { return typeTraffic }
 
 // Reporter encapsulates different ways to report statistics
 type Reporter interface {
-	ReportError(map[*Error]int) error
-	ReportLatency([]*LatencyTracker) error
-	ReportTraffic([]*TrafficTracker) error
+	ReportTraffic(map[string]*TrafficTracker) error
 }
 
 type tickingReporter struct {
@@ -103,14 +55,13 @@ type tickingReporter struct {
 
 // Measured is the controller to report statistics
 type Measured struct {
-	reporters []Reporter
-	chStat    chan Stat
-	chStop    chan struct{}
-	stopped   int32
-
-	errorList   []*Error
-	latencyList []*Latency
-	trafficList []*Traffic
+	reporters     []Reporter
+	maxBufferSize int
+	chTraffic     chan *Traffic
+	traffic       map[string]*TrafficTracker
+	chStop        chan struct{}
+	stopped       int32
+	mutex         sync.Mutex
 }
 
 var (
@@ -119,7 +70,7 @@ var (
 )
 
 func init() {
-	defaultMeasured = New()
+	defaultMeasured = New(50000)
 }
 
 // DialFunc is the type of function measured can wrap
@@ -146,12 +97,13 @@ func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
 }
 
 // New creates a new Measured instance
-func New() *Measured {
+func New(maxBufferSize int) *Measured {
 	return &Measured{
-		// to avoid blocking when busily reporting stats
-		chStat:  make(chan Stat),
-		chStop:  make(chan struct{}),
-		stopped: 1,
+		maxBufferSize: maxBufferSize,
+		chTraffic:     make(chan *Traffic, maxBufferSize),
+		traffic:       make(map[string]*TrafficTracker, maxBufferSize),
+		chStop:        make(chan struct{}),
+		stopped:       1,
 	}
 }
 
@@ -160,7 +112,7 @@ func New() *Measured {
 // be cleared after each round.
 func (m *Measured) Start(reportInterval time.Duration, reporters ...Reporter) {
 	if atomic.CompareAndSwapInt32(&m.stopped, 1, 0) {
-		go m.run(reportInterval, reporters...)
+		m.run(reportInterval, reporters...)
 	} else {
 		log.Debug("measured loop already started")
 	}
@@ -181,7 +133,6 @@ func (m *Measured) Dialer(d DialFunc, interval time.Duration) DialFunc {
 	return func(net, addr string) (net.Conn, error) {
 		c, err := d(net, addr)
 		if err != nil {
-			m.submitError(addr, err, "dial")
 			return nil, err
 		}
 		log.Tracef("Wraping client connection to %s as measured.Conn", addr)
@@ -207,137 +158,94 @@ func (l *MeasuredListener) Accept() (c net.Conn, err error) {
 	if err != nil {
 		return
 	}
-	log.Tracef("Wraping server connection to %s as measured.Conn", c.RemoteAddr().String())
+	log.Tracef("Wrapping server connection to %s as measured.Conn", c.RemoteAddr().String())
 	return l.m.newConn(c, l.interval), err
 }
 
 func (m *Measured) run(reportInterval time.Duration, reporters ...Reporter) {
-	log.Debugf("Measured loop started with %d reporter(s) and interval %v", len(reporters), reportInterval)
+	log.Debugf("Measured loop starting with %d reporter(s) and interval %v", len(reporters), reportInterval)
+	go m.calculateLoop()
+	go m.reportLoop(reportInterval, reporters...)
+}
+
+func (m *Measured) calculateLoop() {
+	for t := range m.chTraffic {
+		if t == nil {
+			log.Debug("Calculate loop stopped")
+			return
+		}
+		m.trackTraffic(t.ID, t.BytesIn, t.BytesOut)
+	}
+}
+
+func (m *Measured) reportLoop(reportInterval time.Duration, reporters ...Reporter) {
 	m.reporters = reporters
 	t := time.NewTicker(reportInterval)
 	for {
 		select {
-		case s := <-m.chStat:
-			switch s.statType() {
-			case typeError:
-				m.errorList = append(m.errorList, s.(*Error))
-			case typeLatency:
-				m.latencyList = append(m.latencyList, s.(*Latency))
-			case typeTraffic:
-				m.trafficList = append(m.trafficList, s.(*Traffic))
-			}
 		case <-t.C:
-			newErrorList := m.errorList
-			m.errorList = []*Error{}
-			newLatencyList := m.latencyList
-			m.latencyList = []*Latency{}
-			newTrafficList := m.trafficList
-			m.trafficList = []*Traffic{}
-			go func() {
-				if len(newErrorList) > 0 {
-					m.reportError(newErrorList)
-				}
-
-				if len(newLatencyList) > 0 {
-					m.reportLatency(newLatencyList)
-				}
-
-				if len(newTrafficList) > 0 {
-					m.reportTraffic(newTrafficList)
-				}
-			}()
+			m.reportTraffic()
 		case <-m.chStop:
-			log.Debug("Measured loop stopped")
+			log.Debug("Report loop stopped")
+			m.chTraffic <- nil
 			return
 		}
 	}
 }
 
-func (m *Measured) reportError(el []*Error) {
-	errors := make(map[*Error]int)
-	for _, e := range el {
-		errors[e] = errors[e] + 1
-	}
-	for _, r := range m.reporters {
-		if err := r.ReportError(errors); err != nil {
-			log.Errorf("Failed to report error to %s: %s", reflect.TypeOf(r), err)
+func (m *Measured) trackTraffic(id string, in uint64, out uint64) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	t := m.traffic[id]
+	if t == nil {
+		if len(m.traffic) >= m.maxBufferSize {
+			// Discarding measurement
+			return
 		}
+
+		// First for this ID
+		t = &TrafficTracker{
+			MinIn:    in,
+			MaxIn:    in,
+			LastIn:   in,
+			TotalIn:  in,
+			MinOut:   out,
+			MaxOut:   out,
+			LastOut:  out,
+			TotalOut: out,
+		}
+		m.traffic[id] = t
+		return
 	}
+
+	// Add to existing ID
+	if in < t.MinIn {
+		t.MinIn = in
+	}
+	if in > t.MaxIn {
+		t.MaxIn = in
+	}
+	t.LastIn = in
+	t.TotalIn += in
+	if out < t.MinOut {
+		t.MinOut = out
+	}
+	if out > t.MaxOut {
+		t.MaxOut = out
+	}
+	t.LastOut = out
+	t.TotalOut += out
 }
 
-type latencySorter []*Latency
-
-func (a latencySorter) Len() int           { return len(a) }
-func (a latencySorter) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a latencySorter) Less(i, j int) bool { return a[i].Latency < a[j].Latency }
-
-func (m *Measured) reportLatency(ll []*Latency) {
-	lm := make(map[string][]*Latency)
-	for _, l := range ll {
-		lm[l.ID] = append(lm[l.ID], l)
-	}
-	trackers := []*LatencyTracker{}
-	for k, l := range lm {
-		t := LatencyTracker{ID: k}
-		t.Last = l[len(l)-1].Latency
-		sort.Sort(latencySorter(l))
-		t.Min = l[0].Latency
-		t.Max = l[len(l)-1].Latency
-		p95 := int(float64(len(l)) * 0.95)
-		t.Percent95 = l[p95].Latency
-		trackers = append(trackers, &t)
-	}
-	log.Tracef("Reporting %d latency entry", len(trackers))
+func (m *Measured) reportTraffic() {
+	m.mutex.Lock()
+	currentTraffic := m.traffic
+	m.traffic = make(map[string]*TrafficTracker)
+	m.mutex.Unlock()
+	log.Debugf("Reporting %d traffic entries", len(currentTraffic))
 	for _, r := range m.reporters {
-		if err := r.ReportLatency(trackers); err != nil {
-			log.Errorf("Failed to report latency data to %s: %s", reflect.TypeOf(r), err)
-		}
-	}
-}
-
-type trafficByBytesIn []*Traffic
-
-func (a trafficByBytesIn) Len() int           { return len(a) }
-func (a trafficByBytesIn) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a trafficByBytesIn) Less(i, j int) bool { return a[i].BytesIn < a[j].BytesIn }
-
-type trafficByBytesOut []*Traffic
-
-func (a trafficByBytesOut) Len() int           { return len(a) }
-func (a trafficByBytesOut) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a trafficByBytesOut) Less(i, j int) bool { return a[i].BytesOut < a[j].BytesOut }
-
-func (m *Measured) reportTraffic(tl []*Traffic) {
-	tm := make(map[string][]*Traffic)
-	for _, t := range tl {
-		tm[t.ID] = append(tm[t.ID], t)
-	}
-	trackers := []*TrafficTracker{}
-	for k, l := range tm {
-		t := TrafficTracker{ID: k}
-		t.LastIn = l[len(l)-1].BytesIn
-		t.LastOut = l[len(l)-1].BytesOut
-		for _, d := range l {
-			t.TotalIn = t.TotalIn + d.BytesIn
-			t.TotalOut = t.TotalOut + d.BytesOut
-		}
-		p95 := int(float64(len(l)) * 0.95)
-
-		sort.Sort(trafficByBytesIn(l))
-		t.MinIn = l[0].BytesIn
-		t.MaxIn = l[len(l)-1].BytesIn
-		t.Percent95In = l[p95].BytesIn
-
-		sort.Sort(trafficByBytesOut(l))
-		t.MinOut = l[0].BytesOut
-		t.MaxOut = l[len(l)-1].BytesOut
-		t.Percent95Out = l[p95].BytesOut
-		trackers = append(trackers, &t)
-	}
-	log.Tracef("Reporting %d traffic entries", len(trackers))
-	for _, r := range m.reporters {
-		if err := r.ReportTraffic(trackers); err != nil {
-			log.Errorf("Failed to report traffic data to %s: %s", reflect.TypeOf(r), err)
+		if err := r.ReportTraffic(currentTraffic); err != nil {
+			log.Errorf("Failed to report traffic data to %v: %v", reflect.TypeOf(r), err)
 		}
 	}
 }
@@ -380,9 +288,6 @@ func (m *Measured) newConn(c net.Conn, interval time.Duration) net.Conn {
 // Read() implements the function from net.Conn
 func (mc *Conn) Read(b []byte) (n int, err error) {
 	n, err = mc.Conn.Read(b)
-	if err != nil {
-		mc.submitError(err, "read")
-	}
 	atomic.AddUint64(&mc.BytesIn, uint64(n))
 	return
 }
@@ -390,9 +295,6 @@ func (mc *Conn) Read(b []byte) (n int, err error) {
 // Write() implements the function from net.Conn
 func (mc *Conn) Write(b []byte) (n int, err error) {
 	n, err = mc.Conn.Write(b)
-	if err != nil {
-		mc.submitError(err, "write")
-	}
 	atomic.AddUint64(&mc.BytesOut, uint64(n))
 	return
 }
@@ -400,16 +302,9 @@ func (mc *Conn) Write(b []byte) (n int, err error) {
 // Close implements the function from net.Conn
 func (mc *Conn) Close() (err error) {
 	err = mc.Conn.Close()
-	if err != nil {
-		mc.submitError(err, "close")
-	}
 	mc.submitTraffic()
 	mc.chStop <- struct{}{}
 	return
-}
-
-func (mc *Conn) submitError(err error, phase string) {
-	mc.m.submitError(mc.ID, err, phase)
 }
 
 func (mc *Conn) submitTraffic() {
@@ -418,36 +313,20 @@ func (mc *Conn) submitTraffic() {
 		atomic.SwapUint64(&mc.BytesOut, 0))
 }
 
-func (m *Measured) submitError(connID string, err error, phase string) {
-	if atomic.LoadInt32(&m.stopped) == 1 {
-		log.Trace("Measured stopped, not submitting error")
-		return
-	}
-	splitted := strings.Split(err.Error(), ":")
-	lastIndex := len(splitted) - 1
-	if lastIndex < 0 {
-		lastIndex = 0
-	}
-	e := strings.Trim(splitted[lastIndex], " ")
-	er := &Error{
-		ID:    connID,
-		Error: e,
-		Phase: phase,
-	}
-	log.Tracef("Submitting error %+v", er)
-	m.chStat <- er
-}
-
-func (m *Measured) submitTraffic(connID string, BytesIn uint64, BytesOut uint64) {
+func (m *Measured) submitTraffic(connID string, in uint64, out uint64) {
 	if atomic.LoadInt32(&m.stopped) == 1 {
 		log.Trace("Measured stopped, not submitting traffic")
 		return
 	}
 	t := &Traffic{
 		ID:       connID,
-		BytesIn:  BytesIn,
-		BytesOut: BytesOut,
+		BytesIn:  in,
+		BytesOut: out,
 	}
-	log.Tracef("Submitting traffic %+v", t)
-	m.chStat <- t
+	select {
+	case m.chTraffic <- t:
+		log.Tracef("Submitted traffic %+v", t)
+	default:
+		log.Tracef("Discarded traffic %+v", t)
+	}
 }
