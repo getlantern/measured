@@ -12,44 +12,6 @@ import (
 	"github.com/getlantern/testify/assert"
 )
 
-func TestReportError(t *testing.T) {
-	md, nr := startWithMockReporter()
-	defer md.Stop()
-	d := md.Dialer(net.Dial, 10*time.Second)
-	_, _ = d("tcp", "localhost:9999")
-	_, _ = d("tcp", "localhost:9998")
-	time.Sleep(100 * time.Millisecond)
-	nr.Lock()
-	defer nr.Unlock()
-	if assert.Equal(t, 2, len(nr.error), "should report errors") {
-		assert.Equal(t, 1, nr.error[Error{"localhost:9999", "connection refused", "dial"}])
-		assert.Equal(t, 1, nr.error[Error{"localhost:9998", "connection refused", "dial"}])
-	}
-}
-
-func TestStopAndRestart(t *testing.T) {
-	md, nr := startWithMockReporter()
-	md.Stop()
-	d := md.Dialer(net.Dial, 10*time.Second)
-	_, _ = d("tcp", "localhost:9999")
-	_, _ = d("tcp", "localhost:9998")
-	time.Sleep(100 * time.Millisecond)
-	nr.Lock()
-	assert.Equal(t, 0, len(nr.error), "stopped measured should not submit any metrics")
-	nr.Unlock()
-	md.Start(50*time.Millisecond, nr)
-	defer md.Stop()
-	_, _ = d("tcp", "localhost:9999")
-	_, _ = d("tcp", "localhost:9998")
-	time.Sleep(100 * time.Millisecond)
-	nr.Lock()
-	defer nr.Unlock()
-	if assert.Equal(t, 2, len(nr.error), "should report again if restarted") {
-		assert.Equal(t, 1, nr.error[Error{"localhost:9999", "connection refused", "dial"}])
-		assert.Equal(t, 1, nr.error[Error{"localhost:9998", "connection refused", "dial"}])
-	}
-}
-
 func TestReportStats(t *testing.T) {
 	md, nr := startWithMockReporter()
 	defer md.Stop()
@@ -99,45 +61,36 @@ func TestReportStats(t *testing.T) {
 	// verify both client and server stats
 	nr.Lock()
 	defer nr.Unlock()
-	if assert.Equal(t, 3, len(nr.traffic)) {
-		t.Logf("Traffic entries: %+v", nr.traffic)
-		e := nr.traffic[0]
-		assert.Equal(t, l.Addr().String(), e.ID, "client stats should report server as remote addr")
-		assert.Equal(t, bytesIn, e.MinOut, "client stats should report same byte count as server")
-		assert.Equal(t, bytesOut, e.MinIn, "client stats should report same byte count as server")
-		assert.Equal(t, bytesIn, e.LastOut, "client stats should report same byte count as server")
-		assert.Equal(t, bytesOut, e.LastIn, "client stats should report same byte count as server")
-		assert.Equal(t, bytesIn, e.TotalOut, "client stats should report same byte count as server")
-		assert.Equal(t, bytesOut, e.TotalIn, "client stats should report same byte count as server")
+	t.Logf("Traffic entries: %+v", nr.traffic)
+	if assert.Equal(t, 2, len(nr.traffic)) {
+		ct := nr.traffic[l.Addr().String()]
+		st := nr.traffic[RemoteAddr]
 
-		// entries reported in a batch are in random order
-		for _, e = range nr.traffic[1:] {
-			if e.ID == l.Addr().String() {
-				assert.Equal(t, uint64(0), e.MinOut, "client stats should only report increased byte count")
-				assert.Equal(t, uint64(0), e.MinIn, "client stats should only report increased byte count")
-				assert.Equal(t, uint64(0), e.LastOut, "client stats should only report increased byte count")
-				assert.Equal(t, uint64(0), e.LastIn, "client stats should only report increased byte count")
-				assert.Equal(t, uint64(0), e.TotalOut, "client stats should only report increased byte count")
-				assert.Equal(t, uint64(0), e.TotalIn, "client stats should only report increased byte count")
+		if assert.NotNil(t, ct) {
+			assert.Equal(t, uint64(0), ct.MinOut, "client stats should only report increased byte count")
+			assert.Equal(t, uint64(0), ct.MinIn, "client stats should only report increased byte count")
+			assert.Equal(t, uint64(0), ct.LastOut, "client stats should only report increased byte count")
+			assert.Equal(t, uint64(0), ct.LastIn, "client stats should only report increased byte count")
+			assert.Equal(t, uint64(0), ct.TotalOut, "client stats should only report increased byte count")
+			assert.Equal(t, uint64(0), ct.TotalIn, "client stats should only report increased byte count")
+		}
 
-			} else {
-				assert.Equal(t, RemoteAddr, e.ID, "should report server stats with client addr as ID")
-				assert.Equal(t, bytesIn, e.TotalIn, "should report server stats with bytes in")
-				assert.Equal(t, bytesOut, e.TotalOut, "should report server stats with bytes out")
-				assert.Equal(t, bytesIn, e.LastIn, "should report server stats with bytes in")
-				assert.Equal(t, bytesOut, e.LastOut, "should report server stats with bytes out")
-				assert.Equal(t, bytesIn, e.MinIn, "should report server stats with bytes in")
-				assert.Equal(t, bytesOut, e.MinOut, "should report server stats with bytes out")
-			}
+		if assert.NotNil(t, st) {
+			assert.Equal(t, bytesIn, st.TotalIn, "should report server stats with bytes in")
+			assert.Equal(t, bytesOut, st.TotalOut, "should report server stats with bytes out")
+			assert.Equal(t, bytesIn, st.LastIn, "should report server stats with bytes in")
+			assert.Equal(t, bytesOut, st.LastOut, "should report server stats with bytes out")
+			assert.Equal(t, bytesIn, st.MinIn, "should report server stats with bytes in")
+			assert.Equal(t, bytesOut, st.MinOut, "should report server stats with bytes out")
 		}
 	}
 }
 
 func startWithMockReporter() (*Measured, *mockReporter) {
 	nr := mockReporter{
-		error: make(map[Error]int),
+		traffic: make(map[string]*TrafficTracker),
 	}
-	md := New()
+	md := New(50000)
 	md.Start(50*time.Millisecond, &nr)
 	// To make sure it really started
 	runtime.Gosched()
@@ -146,30 +99,14 @@ func startWithMockReporter() (*Measured, *mockReporter) {
 
 type mockReporter struct {
 	sync.Mutex
-	error   map[Error]int
-	latency []*LatencyTracker
-	traffic []*TrafficTracker
+	traffic map[string]*TrafficTracker
 }
 
-func (nr *mockReporter) ReportError(e map[*Error]int) error {
+func (nr *mockReporter) ReportTraffic(t map[string]*TrafficTracker) error {
 	nr.Lock()
 	defer nr.Unlock()
-	for k, v := range e {
-		nr.error[*k] = v
+	for key, value := range t {
+		nr.traffic[key] = value
 	}
-	return nil
-}
-
-func (nr *mockReporter) ReportLatency(l []*LatencyTracker) error {
-	nr.Lock()
-	defer nr.Unlock()
-	nr.latency = append(nr.latency, l...)
-	return nil
-}
-
-func (nr *mockReporter) ReportTraffic(t []*TrafficTracker) error {
-	nr.Lock()
-	defer nr.Unlock()
-	nr.traffic = append(nr.traffic, t...)
 	return nil
 }
