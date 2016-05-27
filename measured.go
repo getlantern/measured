@@ -19,6 +19,13 @@ import (
 	"github.com/getlantern/golog"
 )
 
+// Traffic encapsulates the traffic data to report
+type Traffic struct {
+	ID       string
+	BytesIn  uint64
+	BytesOut uint64
+}
+
 // TrafficTracker tracks traffic in single reporting period
 type TrafficTracker struct {
 	MinIn uint64
@@ -50,6 +57,7 @@ type tickingReporter struct {
 type Measured struct {
 	reporters     []Reporter
 	maxBufferSize int
+	chTraffic     chan *Traffic
 	traffic       map[string]*TrafficTracker
 	chStop        chan struct{}
 	stopped       int32
@@ -92,6 +100,7 @@ func Listener(l net.Listener, interval time.Duration) *MeasuredListener {
 func New(maxBufferSize int) *Measured {
 	return &Measured{
 		maxBufferSize: maxBufferSize,
+		chTraffic:     make(chan *Traffic, maxBufferSize),
 		traffic:       make(map[string]*TrafficTracker, maxBufferSize),
 		chStop:        make(chan struct{}),
 		stopped:       1,
@@ -103,7 +112,7 @@ func New(maxBufferSize int) *Measured {
 // be cleared after each round.
 func (m *Measured) Start(reportInterval time.Duration, reporters ...Reporter) {
 	if atomic.CompareAndSwapInt32(&m.stopped, 1, 0) {
-		go m.run(reportInterval, reporters...)
+		m.run(reportInterval, reporters...)
 	} else {
 		log.Debug("measured loop already started")
 	}
@@ -154,7 +163,22 @@ func (l *MeasuredListener) Accept() (c net.Conn, err error) {
 }
 
 func (m *Measured) run(reportInterval time.Duration, reporters ...Reporter) {
-	log.Debugf("Measured loop started with %d reporter(s) and interval %v", len(reporters), reportInterval)
+	log.Debugf("Measured loop starting with %d reporter(s) and interval %v", len(reporters), reportInterval)
+	go m.calculateLoop()
+	go m.reportLoop(reportInterval, reporters...)
+}
+
+func (m *Measured) calculateLoop() {
+	for t := range m.chTraffic {
+		if t == nil {
+			log.Debug("Calculate loop stopped")
+			return
+		}
+		m.trackTraffic(t.ID, t.BytesIn, t.BytesOut)
+	}
+}
+
+func (m *Measured) reportLoop(reportInterval time.Duration, reporters ...Reporter) {
 	m.reporters = reporters
 	t := time.NewTicker(reportInterval)
 	for {
@@ -162,7 +186,8 @@ func (m *Measured) run(reportInterval time.Duration, reporters ...Reporter) {
 		case <-t.C:
 			m.reportTraffic()
 		case <-m.chStop:
-			log.Debug("Measured loop stopped")
+			log.Debug("Report loop stopped")
+			m.chTraffic <- nil
 			return
 		}
 	}
@@ -293,5 +318,15 @@ func (m *Measured) submitTraffic(connID string, in uint64, out uint64) {
 		log.Trace("Measured stopped, not submitting traffic")
 		return
 	}
-	m.trackTraffic(connID, in, out)
+	t := &Traffic{
+		ID:       connID,
+		BytesIn:  in,
+		BytesOut: out,
+	}
+	select {
+	case m.chTraffic <- t:
+		log.Tracef("Submitted traffic %+v", t)
+	default:
+		log.Tracef("Discarded traffic %+v", t)
+	}
 }
