@@ -273,12 +273,16 @@ func (mc *Conn) Close() (err error) {
 
 func (mc *Conn) submitTrafficIfNecessary() {
 	now := time.Now()
+	needToSubmit := false
 	mc.submitMutex.Lock()
 	if now.Sub(mc.lastSubmitted) > mc.interval {
-		mc.submitTraffic()
+		needToSubmit = true
 		mc.lastSubmitted = now
 	}
 	mc.submitMutex.Unlock()
+	if needToSubmit {
+		mc.submitTraffic()
+	}
 }
 
 func (mc *Conn) submitTraffic() {
