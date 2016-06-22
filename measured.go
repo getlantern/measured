@@ -233,10 +233,11 @@ type Conn struct {
 	// total bytes read from this connection
 	BytesIn uint64
 	// total bytes wrote to this connection
-	BytesOut uint64
-	// a channel to stop measure and report statistics
-	chStop chan struct{}
-	m      *Measured
+	BytesOut      uint64
+	m             *Measured
+	interval      time.Duration
+	lastSubmitted time.Time
+	submitMutex   sync.Mutex
 }
 
 func (m *Measured) newConn(c net.Conn, interval time.Duration) net.Conn {
@@ -244,26 +245,14 @@ func (m *Measured) newConn(c net.Conn, interval time.Duration) net.Conn {
 	if ra == nil {
 		panic("nil remote address is not allowed")
 	}
-	mc := &Conn{Conn: c, ID: ra.String(), chStop: make(chan struct{}), m: m}
-	ticker := time.NewTicker(interval)
-	go func() {
-		for {
-			select {
-			case _ = <-ticker.C:
-				mc.submitTraffic()
-			case _ = <-mc.chStop:
-				ticker.Stop()
-				return
-			}
-		}
-	}()
-	return mc
+	return &Conn{Conn: c, ID: ra.String(), m: m, interval: interval}
 }
 
 // Read() implements the function from net.Conn
 func (mc *Conn) Read(b []byte) (n int, err error) {
 	n, err = mc.Conn.Read(b)
 	atomic.AddUint64(&mc.BytesIn, uint64(n))
+	mc.submitTrafficIfNecessary()
 	return
 }
 
@@ -271,6 +260,7 @@ func (mc *Conn) Read(b []byte) (n int, err error) {
 func (mc *Conn) Write(b []byte) (n int, err error) {
 	n, err = mc.Conn.Write(b)
 	atomic.AddUint64(&mc.BytesOut, uint64(n))
+	mc.submitTrafficIfNecessary()
 	return
 }
 
@@ -278,8 +268,17 @@ func (mc *Conn) Write(b []byte) (n int, err error) {
 func (mc *Conn) Close() (err error) {
 	err = mc.Conn.Close()
 	mc.submitTraffic()
-	mc.chStop <- struct{}{}
 	return
+}
+
+func (mc *Conn) submitTrafficIfNecessary() {
+	now := time.Now()
+	mc.submitMutex.Lock()
+	if now.Sub(mc.lastSubmitted) > mc.interval {
+		mc.submitTraffic()
+		mc.lastSubmitted = now
+	}
+	mc.submitMutex.Unlock()
 }
 
 func (mc *Conn) submitTraffic() {
