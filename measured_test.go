@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 func TestReportStats(t *testing.T) {
 	md, nr := startWithMockReporter()
 	defer md.Stop()
-	var RemoteAddr string
+	var remoteAddr atomic.Value
 
 	// start server with byte counting
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -28,7 +29,7 @@ func TestReportStats(t *testing.T) {
 		Handler: http.NotFoundHandler(),
 		ConnState: func(c net.Conn, s http.ConnState) {
 			if s == http.StateClosed {
-				RemoteAddr = c.RemoteAddr().String()
+				remoteAddr.Store(c.RemoteAddr().String())
 			}
 		},
 	}
@@ -54,7 +55,7 @@ func TestReportStats(t *testing.T) {
 	t.Logf("Traffic entries: %+v", nr.traffic)
 	if assert.Equal(t, 2, len(nr.traffic)) {
 		ct := nr.traffic[l.Addr().String()]
-		st := nr.traffic[RemoteAddr]
+		st := nr.traffic[remoteAddr.Load().(string)]
 
 		if assert.NotNil(t, ct) {
 			assert.Equal(t, 0, int(ct.MinOut), "client stats should only report increased byte count")
