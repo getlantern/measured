@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/getlantern/golog"
+	"github.com/getlantern/mtime"
 )
 
 // Traffic encapsulates the traffic data to report
@@ -233,11 +234,11 @@ type Conn struct {
 	// total bytes read from this connection
 	BytesIn uint64
 	// total bytes wrote to this connection
-	BytesOut      uint64
-	m             *Measured
-	interval      time.Duration
-	lastSubmitted time.Time
-	submitMutex   sync.Mutex
+	BytesOut                  uint64
+	m                         *Measured
+	interval                  time.Duration
+	elapsedSinceLastSubmitted func() time.Duration
+	submitMutex               sync.Mutex
 }
 
 func (m *Measured) newConn(c net.Conn, interval time.Duration) net.Conn {
@@ -272,12 +273,11 @@ func (mc *Conn) Close() (err error) {
 }
 
 func (mc *Conn) submitTrafficIfNecessary() {
-	now := time.Now()
 	needToSubmit := false
 	mc.submitMutex.Lock()
-	if now.Sub(mc.lastSubmitted) > mc.interval {
+	if mc.elapsedSinceLastSubmitted == nil || mc.elapsedSinceLastSubmitted() > mc.interval {
 		needToSubmit = true
-		mc.lastSubmitted = now
+		mc.elapsedSinceLastSubmitted = mtime.Stopwatch()
 	}
 	mc.submitMutex.Unlock()
 	if needToSubmit {
