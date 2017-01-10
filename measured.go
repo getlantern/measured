@@ -39,6 +39,9 @@ type Conn interface {
 	// FirstError gets the the first unexpected error encountered during network
 	// processing. If this is not nil, something went wrong.
 	FirstError() error
+
+	// Wrapped() exposes the wrapped net.Conn
+	Wrapped() net.Conn
 }
 
 // conn wraps a net.Conn and tracks statistics on data transfer, throughput
@@ -65,6 +68,24 @@ func Wrap(wrapped net.Conn, rateInterval time.Duration, onFinish func(Conn)) Con
 	}
 	go c.track()
 	return c
+}
+
+func (c *conn) Stats() *Stats {
+	stats := &Stats{}
+	stats.SentTotal, stats.SentMin, stats.SentMax, stats.SentAvg = c.sent.get()
+	stats.RecvTotal, stats.RecvMin, stats.RecvMax, stats.RecvAvg = c.recv.get()
+	return stats
+}
+
+func (c *conn) FirstError() error {
+	c.errMx.RLock()
+	firstErr := c.firstErr
+	c.errMx.RUnlock()
+	return firstErr
+}
+
+func (c *conn) Wrapped() net.Conn {
+	return c.Conn
 }
 
 func (c *conn) track() {
@@ -110,20 +131,6 @@ func (c *conn) Close() error {
 		return err
 	}
 	return nil
-}
-
-func (c *conn) Stats() *Stats {
-	stats := &Stats{}
-	stats.SentTotal, stats.SentMin, stats.SentMax, stats.SentAvg = c.sent.get()
-	stats.RecvTotal, stats.RecvMin, stats.RecvMax, stats.RecvAvg = c.recv.get()
-	return stats
-}
-
-func (c *conn) FirstError() error {
-	c.errMx.RLock()
-	firstErr := c.firstErr
-	c.errMx.RUnlock()
-	return firstErr
 }
 
 func (c *conn) storeError(err error) {
