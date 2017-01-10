@@ -33,18 +33,19 @@ type Stats struct {
 type Conn interface {
 	net.Conn
 
-	// GetStats gets the stats over the lifetime of the connection
-	GetStats() *Stats
+	// Stats gets the stats over the lifetime of the connection
+	Stats() *Stats
 
-	// GetFirstError gets the the first unexpected error encountered during
-	// network processing. If this is not nil, something went wrong.
-	GetFirstError() error
+	// FirstError gets the the first unexpected error encountered during network
+	// processing. If this is not nil, something went wrong.
+	FirstError() error
 }
 
 // conn wraps a net.Conn and tracks statistics on data transfer, throughput
 // and success of connection.
 type conn struct {
 	net.Conn
+	onFinish         func(Conn)
 	sent             rater
 	recv             rater
 	firstErr         error
@@ -56,9 +57,10 @@ type conn struct {
 
 // Wrap wraps a connection into a measured Conn that recalculates rates at the
 // given interval.
-func Wrap(wrapped net.Conn, rateInterval time.Duration) Conn {
+func Wrap(wrapped net.Conn, rateInterval time.Duration, onFinish func(Conn)) Conn {
 	c := &conn{
 		Conn:             wrapped,
+		onFinish:         onFinish,
 		trackingFinished: make(chan bool),
 	}
 	go c.track()
@@ -71,6 +73,9 @@ func (c *conn) track() {
 		c.recv.calc()
 		if atomic.LoadInt32(&c.closed) == 1 {
 			c.trackingFinished <- true
+			if c.onFinish != nil {
+				c.onFinish(c)
+			}
 			return
 		}
 		time.Sleep(rateInterval)
@@ -107,14 +112,14 @@ func (c *conn) Close() error {
 	return nil
 }
 
-func (c *conn) GetStats() *Stats {
+func (c *conn) Stats() *Stats {
 	stats := &Stats{}
 	stats.SentTotal, stats.SentMin, stats.SentMax, stats.SentAvg = c.sent.get()
 	stats.RecvTotal, stats.RecvMin, stats.RecvMax, stats.RecvAvg = c.recv.get()
 	return stats
 }
 
-func (c *conn) GetFirstError() error {
+func (c *conn) FirstError() error {
 	c.errMx.RLock()
 	firstErr := c.firstErr
 	c.errMx.RUnlock()

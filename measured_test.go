@@ -14,7 +14,7 @@ func TestMeasuredConn(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
-	conn := Wrap(wrapped, rateInterval)
+	conn := Wrap(wrapped, rateInterval, nil)
 	n, err := conn.Write([]byte("12345678"))
 	if !assert.NoError(t, err) {
 		return
@@ -33,9 +33,9 @@ func TestMeasuredConn(t *testing.T) {
 	// Wait for tracking to finish
 	time.Sleep(2 * rateInterval)
 
-	assert.Nil(t, conn.GetFirstError())
+	assert.Nil(t, conn.FirstError())
 
-	stats := conn.GetStats()
+	stats := conn.Stats()
 	if !assert.NotNil(t, stats) {
 		return
 	}
