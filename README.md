@@ -1,2 +1,2 @@
 # measured
-Wraps a dialer to measure the delay, throughput and errors of a connection
+Wraps a dialer to measure the total bytes sent/received as well as rates thereof.
