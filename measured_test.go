@@ -1,10 +1,12 @@
 package measured
 
 import (
-	"github.com/getlantern/mockconn"
-	"github.com/stretchr/testify/assert"
+	"net"
 	"testing"
 	"time"
+
+	"github.com/getlantern/mockconn"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMeasuredConn(t *testing.T) {
@@ -14,7 +16,7 @@ func TestMeasuredConn(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
-	conn := Wrap(wrapped, rateInterval, nil)
+	conn := Wrap(&slowConn{wrapped}, rateInterval, nil)
 	n, err := conn.Write([]byte("12345678"))
 	if !assert.NoError(t, err) {
 		return
@@ -49,4 +51,18 @@ func TestMeasuredConn(t *testing.T) {
 	assert.True(t, stats.RecvMin > 0)
 	assert.True(t, stats.RecvMax > 0)
 	assert.True(t, stats.RecvAvg > 0)
+}
+
+type slowConn struct {
+	net.Conn
+}
+
+func (c *slowConn) Write(b []byte) (int, error) {
+	time.Sleep(10 * time.Millisecond)
+	return c.Conn.Write(b)
+}
+
+func (c *slowConn) Read(b []byte) (int, error) {
+	time.Sleep(10 * time.Millisecond)
+	return c.Conn.Read(b)
 }

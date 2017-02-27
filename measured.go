@@ -13,7 +13,6 @@ import (
 const (
 	ioTimeout       = "i/o timeout"
 	ioTimeoutLength = 11
-	rateInterval    = 1 * time.Second
 )
 
 // Stats provides statistics about total transfer and rates, all in bytes.
@@ -66,7 +65,7 @@ func Wrap(wrapped net.Conn, rateInterval time.Duration, onFinish func(Conn)) Con
 		onFinish:         onFinish,
 		trackingFinished: make(chan bool),
 	}
-	go c.track()
+	go c.track(rateInterval)
 	return c
 }
 
@@ -88,7 +87,7 @@ func (c *conn) Wrapped() net.Conn {
 	return c.Conn
 }
 
-func (c *conn) track() {
+func (c *conn) track(rateInterval time.Duration) {
 	for {
 		c.sent.calc()
 		c.recv.calc()
