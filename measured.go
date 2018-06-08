@@ -25,6 +25,9 @@ type Stats struct {
 	RecvMin   float64
 	RecvMax   float64
 	RecvAvg   float64
+	// Duration indicates how long it has been since the connection was opened
+	// (more precisely, how long it's been since it was wrapped by measured).
+	Duration time.Duration
 }
 
 // Conn is a wrapped net.Conn that exposes statistics about transfer data and
@@ -47,6 +50,7 @@ type Conn interface {
 // and success of connection.
 type conn struct {
 	net.Conn
+	startTime        time.Time
 	onFinish         func(Conn)
 	sent             rater
 	recv             rater
@@ -62,6 +66,7 @@ type conn struct {
 func Wrap(wrapped net.Conn, rateInterval time.Duration, onFinish func(Conn)) Conn {
 	c := &conn{
 		Conn:             wrapped,
+		startTime:        time.Now(),
 		onFinish:         onFinish,
 		trackingFinished: make(chan bool),
 	}
@@ -73,6 +78,7 @@ func (c *conn) Stats() *Stats {
 	stats := &Stats{}
 	stats.SentTotal, stats.SentMin, stats.SentMax, stats.SentAvg = c.sent.get()
 	stats.RecvTotal, stats.RecvMin, stats.RecvMax, stats.RecvAvg = c.recv.get()
+	stats.Duration = time.Now().Sub(c.startTime)
 	return stats
 }
 

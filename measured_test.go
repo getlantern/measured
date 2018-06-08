@@ -51,6 +51,8 @@ func TestMeasuredConn(t *testing.T) {
 	assert.True(t, stats.RecvMin > 0)
 	assert.True(t, stats.RecvMax > 0)
 	assert.True(t, stats.RecvAvg > 0)
+
+	assert.True(t, stats.Duration > 10*time.Millisecond, "Stats should have some duration")
 }
 
 type slowConn struct {
