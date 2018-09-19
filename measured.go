@@ -10,11 +10,6 @@ import (
 	"github.com/getlantern/mtime"
 )
 
-const (
-	ioTimeout       = "i/o timeout"
-	ioTimeoutLength = 11
-)
-
 // Stats provides statistics about total transfer and rates, all in bytes.
 type Stats struct {
 	SentTotal int
@@ -147,7 +142,8 @@ func (c *conn) storeError(err error) {
 }
 
 func isTimeout(err error) bool {
-	es := err.Error()
-	esl := len(es)
-	return esl >= ioTimeoutLength && es[esl-ioTimeoutLength:] == ioTimeout
+	if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+		return true
+	}
+	return false
 }
