@@ -1,6 +1,7 @@
 package measured
 
 import (
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -67,4 +68,15 @@ func (c *slowConn) Write(b []byte) (int, error) {
 func (c *slowConn) Read(b []byte) (int, error) {
 	time.Sleep(10 * time.Millisecond)
 	return c.Conn.Read(b)
+}
+
+func TestIsTimeout(t *testing.T) {
+	err1 := &net.DNSError{Err: "foo", IsTimeout: true}
+	err2 := &net.DNSError{Err: "bar", IsTimeout: false}
+	err3 := fmt.Errorf("timeout: %s", "baz")
+
+	assert.True(t, isTimeout(err1))
+	assert.True(t, isTimeout(fmt.Errorf("while looking: %w", err1)))
+	assert.False(t, isTimeout(err2))
+	assert.False(t, isTimeout(err3))
 }
