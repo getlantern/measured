@@ -1,6 +1,7 @@
 package measured
 
 import (
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -142,7 +143,8 @@ func (c *conn) storeError(err error) {
 }
 
 func isTimeout(err error) bool {
-	if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+	var nerr net.Error
+	if ok := errors.As(err, &nerr); ok && nerr.Timeout() {
 		return true
 	}
 	return false
