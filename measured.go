@@ -5,7 +5,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/mtime"
@@ -46,25 +45,24 @@ type Conn interface {
 // and success of connection.
 type conn struct {
 	net.Conn
-	startTime        time.Time
-	onFinish         func(Conn)
-	sent             rater
-	recv             rater
-	firstErr         error
-	closed           int32
-	trackingFinished chan bool
-	statsMx          sync.RWMutex
-	errMx            sync.RWMutex
+	startTime time.Time
+	onFinish  func(Conn)
+	sent      rater
+	recv      rater
+	firstErr  error
+	closeOnce sync.Once
+	closedCh  chan interface{}
+	errMx     sync.RWMutex
 }
 
 // Wrap wraps a connection into a measured Conn that recalculates rates at the
 // given interval.
 func Wrap(wrapped net.Conn, rateInterval time.Duration, onFinish func(Conn)) Conn {
 	c := &conn{
-		Conn:             wrapped,
-		startTime:        time.Now(),
-		onFinish:         onFinish,
-		trackingFinished: make(chan bool),
+		Conn:      wrapped,
+		startTime: time.Now(),
+		onFinish:  onFinish,
+		closedCh:  make(chan interface{}),
 	}
 	go c.track(rateInterval)
 	return c
@@ -74,7 +72,7 @@ func (c *conn) Stats() *Stats {
 	stats := &Stats{}
 	stats.SentTotal, stats.SentMin, stats.SentMax, stats.SentAvg = c.sent.get()
 	stats.RecvTotal, stats.RecvMin, stats.RecvMax, stats.RecvAvg = c.recv.get()
-	stats.Duration = time.Now().Sub(c.startTime)
+	stats.Duration = time.Since(c.startTime)
 	return stats
 }
 
@@ -90,17 +88,22 @@ func (c *conn) Wrapped() net.Conn {
 }
 
 func (c *conn) track(rateInterval time.Duration) {
+	c.sent.calc()
+	c.recv.calc()
+
 	for {
-		c.sent.calc()
-		c.recv.calc()
-		if atomic.LoadInt32(&c.closed) == 1 {
-			c.trackingFinished <- true
+		select {
+		case <-c.closedCh:
+			c.sent.calc()
+			c.recv.calc()
 			if c.onFinish != nil {
 				c.onFinish(c)
 			}
 			return
+		case <-time.After(rateInterval):
+			c.sent.calc()
+			c.recv.calc()
 		}
-		time.Sleep(rateInterval)
 	}
 }
 
@@ -124,14 +127,12 @@ func (c *conn) Read(b []byte) (int, error) {
 	return n, err
 }
 
-func (c *conn) Close() error {
-	if atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
-		err := c.Conn.Close()
-		// Wait for tracking to finish
-		<-c.trackingFinished
-		return err
-	}
-	return nil
+func (c *conn) Close() (err error) {
+	c.closeOnce.Do(func() {
+		err = c.Conn.Close()
+		close(c.closedCh)
+	})
+	return
 }
 
 func (c *conn) storeError(err error) {
